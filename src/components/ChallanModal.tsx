@@ -1,14 +1,15 @@
 import React, { useState, useMemo } from 'react'
-import { X, Download, Printer, Calendar, User, Sparkles, RefreshCw } from 'lucide-react'
+import { X, Download, Printer, Calendar, User, Briefcase, UserCheck, Sparkles, RefreshCw } from 'lucide-react'
 
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import type { SessionEntry, BillItem } from '../types'
-import { formatMinutes, formatRupees, getMonthLabel } from '../utils/calculations'
+import type { SessionEntry, BillItem, UserAccount } from '../types'
+import { formatMinutes, formatRupees, getMonthLabel, formatBillingPeriod } from '../utils/calculations'
 
 interface ChallanModalProps {
   entries: SessionEntry[]
   initialClient?: string
+  availableUsers?: UserAccount[]
   onClose: () => void
   onSyncBill?: (bill: BillItem) => Promise<boolean | void>
 }
@@ -16,6 +17,7 @@ interface ChallanModalProps {
 export const ChallanModal: React.FC<ChallanModalProps> = ({
   entries,
   initialClient = 'All clients',
+  availableUsers = [],
   onClose,
   onSyncBill,
 }) => {
@@ -53,6 +55,13 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
     return Array.from(set).sort()
   }, [entries])
 
+  // Extract all unique projects from entries
+  const availableProjects = useMemo(() => {
+    const set = new Set<string>()
+    entries.forEach((e) => e.project && set.add(e.project))
+    return Array.from(set).sort()
+  }, [entries])
+
   // By default, the most recent month is selected!
   const [selectedMonth, setSelectedMonth] = useState<string>(availableMonths[0] || currentMonthKey)
 
@@ -63,7 +72,13 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
       : 'All clients'
   )
 
-  // Filter entries dynamically based on selectedMonth and selectedClient
+  // Project selection (defaults to 'All projects')
+  const [selectedProject, setSelectedProject] = useState<string>('All projects')
+
+  // Assigned customer (from available users from Google Sheet Users tab)
+  const [assignedTo, setAssignedTo] = useState<string>('')
+
+  // Filter entries dynamically based on selectedMonth, selectedClient, and selectedProject
   const challanEntries = useMemo(() => {
     if (!Array.isArray(entries)) return []
     return entries.filter((e) => {
@@ -72,9 +87,11 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
         selectedMonth === 'all' ? true : String(e.date || '').startsWith(selectedMonth)
       const matchesClient =
         selectedClient === 'All clients' ? true : String(e.client || '').trim().toLowerCase() === selectedClient.trim().toLowerCase()
-      return matchesMonth && matchesClient
+      const matchesProject =
+        selectedProject === 'All projects' ? true : String(e.project || '').trim().toLowerCase() === selectedProject.trim().toLowerCase()
+      return matchesMonth && matchesClient && matchesProject
     })
-  }, [entries, selectedMonth, selectedClient])
+  }, [entries, selectedMonth, selectedClient, selectedProject])
 
   // Compute live totals for the dynamic challan
   const totals = useMemo(() => {
@@ -110,47 +127,70 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
   const handleDownloadPdf = () => {
     const doc = new jsPDF()
 
-    // Header styling
+    // Header styling (210mm wide)
     doc.setFillColor(15, 107, 97) // #0f6b61
     doc.rect(0, 0, 210, 26, 'F')
 
     doc.setTextColor(255, 255, 255)
-    doc.setFontSize(14)
+    doc.setFontSize(13)
     doc.setFont('helvetica', 'bold')
-    doc.text('SATISH SERVICENOW SUPPORT - WORK CHALLAN', 14, 17)
+    doc.text('SATISH SERVICENOW SUPPORT - WORK CHALLAN', 14, 16, { maxWidth: 125 })
 
-    doc.setFontSize(9)
+    doc.setFontSize(8.5)
     doc.setFont('helvetica', 'normal')
-    doc.text(`Generated: ${today}`, 196, 17, { align: 'right' })
+    doc.text(`Generated: ${today}`, 196, 16, { align: 'right' })
 
-    // Bill to & period section
+    // Bill to & period section (Left x=14 maxWidth 88, Right x=110 maxWidth 86)
     doc.setTextColor(30, 40, 35)
-    doc.setFontSize(10)
+    doc.setFontSize(9)
     doc.setFont('helvetica', 'bold')
-    doc.text('BILL TO:', 14, 38)
+    doc.text('BILL TO:', 14, 37)
     doc.setFont('helvetica', 'normal')
-    doc.text(selectedClient === 'All clients' ? 'All Clients Summary' : selectedClient, 14, 44)
+    doc.setFontSize(8.5)
+    doc.text(selectedClient === 'All clients' ? 'All Clients Summary' : selectedClient, 14, 43, { maxWidth: 88 })
 
     doc.setFont('helvetica', 'bold')
-    doc.text('BILLING MONTH / SCOPE:', 130, 38)
+    doc.setFontSize(9)
+    doc.text('PROJECT SCOPE:', 14, 51)
     doc.setFont('helvetica', 'normal')
-    doc.text(periodLabel, 130, 44)
+    doc.setFontSize(8.5)
+    doc.text(selectedProject === 'All projects' ? 'All Projects' : selectedProject, 14, 57, { maxWidth: 88 })
 
-    // Table
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(9)
+    doc.text('BILLING MONTH / SCOPE:', 110, 37)
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8.5)
+    doc.text(periodLabel, 110, 43, { maxWidth: 86 })
+
+    if (assignedTo) {
+      const assignedObj = availableUsers.find((u) => u.username === assignedTo)
+      const assignedLabel = assignedObj ? `${assignedObj.fullName || assignedObj.name} (${assignedObj.username})` : assignedTo
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(9)
+      doc.text('ASSIGNED CUSTOMER:', 110, 51)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8.5)
+      doc.text(assignedLabel, 110, 57, { maxWidth: 86 })
+    }
+
+    const startTableY = 66
     const tableData = challanEntries.map((e) => [
       e.date,
       e.project,
-      e.description,
-      `${e.startTime} - ${e.endTime}`,
+      e.description || '—',
+      `${e.startTime || '—'} - ${e.endTime || '—'}`,
       formatMinutes(e.totalMinutes),
-      e.discountMinutes ? `-${formatMinutes(e.discountMinutes)}` : '0m',
+      formatMinutes(e.discountMinutes),
       formatMinutes(e.effectiveMinutes),
-      `Rs. ${e.rate}/hr`,
+      `Rs. ${e.rate || 0}/hr`,
       `Rs. ${Math.round(e.moneyWithDiscount).toLocaleString('en-IN')}`,
     ])
 
+    // Table with precise column dimensions summing to 182mm (14 to 196)
     autoTable(doc, {
-      startY: 52,
+      startY: startTableY,
+      margin: { left: 14, right: 14 },
       head: [
         [
           'Date',
@@ -173,36 +213,44 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
       },
       styles: {
         fontSize: 7.5,
-        cellPadding: 2.5,
+        cellPadding: 2,
+        overflow: 'linebreak',
       },
       columnStyles: {
-        2: { cellWidth: 40 }, // description
-        8: { halign: 'right' },
+        0: { cellWidth: 20 },
+        1: { cellWidth: 24 },
+        2: { cellWidth: 40 },
+        3: { cellWidth: 22 },
+        4: { cellWidth: 16 },
+        5: { cellWidth: 15 },
+        6: { cellWidth: 16 },
+        7: { cellWidth: 14 },
+        8: { cellWidth: 15, halign: 'right' },
       },
     })
 
-    // Summary block below table
+    // Summary block below table (width 82mm, from 114 to 196mm)
     const finalY = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 180
 
     doc.setFillColor(242, 247, 244)
-    doc.roundedRect(120, finalY + 8, 76, 44, 2, 2, 'F')
+    doc.roundedRect(114, finalY + 8, 82, 44, 2, 2, 'F')
 
     doc.setTextColor(50, 60, 55)
     doc.setFontSize(8.5)
-    doc.text(`Gross Total:`, 124, finalY + 16)
+    doc.text(`Gross Total:`, 118, finalY + 16, { maxWidth: 42 })
     doc.text(`Rs. ${Math.round(totals.grossMoney).toLocaleString('en-IN')}`, 192, finalY + 16, { align: 'right' })
 
     doc.setTextColor(178, 87, 43)
-    doc.text(`Time Discount (${formatMinutes(totals.discountMinutes)}):`, 124, finalY + 23)
+    doc.text(`Time Discount (${formatMinutes(totals.discountMinutes)}):`, 118, finalY + 23, { maxWidth: 42 })
     doc.text(`-Rs. ${Math.round(totals.discountMoney).toLocaleString('en-IN')}`, 192, finalY + 23, { align: 'right' })
 
     doc.setDrawColor(200, 215, 205)
-    doc.line(124, finalY + 27, 192, finalY + 27)
+    doc.line(118, finalY + 27, 192, finalY + 27)
 
     doc.setTextColor(15, 107, 97)
     doc.setFont('helvetica', 'bold')
-    doc.setFontSize(11)
-    doc.text(`Net Amount Payable:`, 124, finalY + 36)
+    doc.setFontSize(10.5)
+    doc.text(`Net Amount Payable:`, 118, finalY + 36, { maxWidth: 42 })
     doc.text(`Rs. ${Math.round(totals.netMoney).toLocaleString('en-IN')}`, 192, finalY + 36, { align: 'right' })
 
     const safeClient = (selectedClient === 'All clients' ? 'all-clients' : selectedClient).toLowerCase().replace(/[^a-z0-9]/g, '-')
@@ -221,13 +269,15 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
       now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
 
     const uniqueProjects =
-      Array.from(new Set(challanEntries.map((e) => e.project).filter(Boolean))).join(', ') ||
-      'ServiceNow Support'
+      selectedProject !== 'All projects'
+        ? selectedProject
+        : Array.from(new Set(challanEntries.map((e) => e.project).filter(Boolean))).join(', ') ||
+          'ServiceNow Support'
 
     return {
       billId,
       createdOn,
-      selectedPeriod: periodLabel,
+      selectedPeriod: formatBillingPeriod(periodLabel),
       client: selectedClient === 'All clients' ? 'All Clients' : selectedClient,
       project: uniqueProjects,
       totalSessions: challanEntries.length,
@@ -241,6 +291,7 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
       paidAmount: 0,
       paidOn: '',
       notes: `Generated via Challan for ${periodLabel}`,
+      assignedTo: assignedTo || '',
     }
   }
 
@@ -338,6 +389,44 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
                 ))}
               </select>
             </div>
+
+            <div className="challan-control-group">
+              <label>
+                <Briefcase size={14} color="#0f6b61" />
+                <span>Select Project:</span>
+              </label>
+              <select
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+                className="challan-select"
+              >
+                <option value="All projects">All Projects</option>
+                {availableProjects.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="challan-control-group">
+              <label>
+                <UserCheck size={14} color="#0f6b61" />
+                <span>Assign To (Customer):</span>
+              </label>
+              <select
+                value={assignedTo}
+                onChange={(e) => setAssignedTo(e.target.value)}
+                className="challan-select"
+              >
+                <option value="">Unassigned (None)</option>
+                {availableUsers.map((u) => (
+                  <option key={u.username} value={u.username}>
+                    {u.fullName || u.name || u.username} ({u.username})
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="challan-preview">
@@ -349,18 +438,45 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
 
             <div className="challan-title">
               <div>
-                <small>Bill To Client</small>
+                <small>Bill To Client &amp; Scope</small>
                 <strong style={{ fontSize: '16px', color: '#16281e' }}>
                   {selectedClient}
                 </strong>
+                <div style={{ fontSize: '12px', color: '#4b5d50', marginTop: '3px' }}>
+                  Project: <b>{selectedProject}</b>
+                </div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <small>Billing Scope</small>
+                <small>Billing Scope Period</small>
                 <strong style={{ fontSize: '15px', color: '#0f6b61' }}>
                   {periodLabel}
                 </strong>
+                <div style={{ fontSize: '12px', color: '#6d7e72', marginTop: '3px' }}>
+                  <b>{challanEntries.length}</b> work sessions
+                </div>
               </div>
             </div>
+
+            {assignedTo && (
+              <div
+                style={{
+                  background: '#f0fdf4',
+                  border: '1px solid #bbf7d0',
+                  borderRadius: '6px',
+                  padding: '6px 12px',
+                  marginBottom: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  fontSize: '12px',
+                }}
+              >
+                <span style={{ color: '#166534', fontWeight: 600 }}>Assigned Customer Portal User:</span>
+                <span style={{ color: '#0f6b61', fontWeight: 700 }}>
+                  {availableUsers.find((u) => u.username === assignedTo)?.fullName || assignedTo} ({assignedTo})
+                </span>
+              </div>
+            )}
 
             <div className="challan-total">
               <small>Total Payable (Net After Time Discount)</small>

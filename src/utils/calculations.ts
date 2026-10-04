@@ -199,6 +199,72 @@ export function getMonthLabel(monthKey: string): string {
 }
 
 /**
+ * Normalizes any billing period string, date, or ISO timestamp into "Month Year" format (e.g. "October 2026").
+ * Ensures that if Google Sheets stores/returns dates or start dates, the UI and exports display only month and year.
+ */
+export function formatBillingPeriod(periodVal: unknown): string {
+  if (!periodVal) return ''
+  if (typeof periodVal !== 'string') {
+    if (periodVal instanceof Date) {
+      return periodVal.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    }
+    periodVal = String(periodVal)
+  }
+  const str = String(periodVal).trim()
+  if (!str) return ''
+  if (str.toLowerCase() === 'all months' || str.toLowerCase() === 'all time') {
+    return 'All Months'
+  }
+
+  const monthNames = [
+    'january', 'february', 'march', 'april', 'may', 'june',
+    'july', 'august', 'september', 'october', 'november', 'december'
+  ]
+
+  // If already matches "Month Year" or "Mon Year" (e.g. "October 2026" or "Oct 2026")
+  const monthWordMatch = str.match(/^([a-zA-Z]+)[\s,]+([0-9]{4})$/)
+  if (monthWordMatch) {
+    const mWord = monthWordMatch[1].toLowerCase()
+    const yr = parseInt(monthWordMatch[2], 10)
+    const mIdx = monthNames.findIndex((m) => m === mWord || mWord.startsWith(m.slice(0, 3)))
+    if (mIdx !== -1) {
+      const d = new Date(yr, mIdx, 1)
+      return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    }
+  }
+
+  // Match "YYYY-MM" or "YYYY-MM-DD"
+  const isoMatch = str.match(/^([0-9]{4})-([0-9]{1,2})(?:-[0-9]{1,2})?/)
+  if (isoMatch) {
+    const yr = parseInt(isoMatch[1], 10)
+    const mo = parseInt(isoMatch[2], 10)
+    if (mo >= 1 && mo <= 12) {
+      const d = new Date(yr, mo - 1, 1)
+      return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    }
+  }
+
+  // Match "DD-MM-YYYY" or "DD/MM/YYYY" or "MM/DD/YYYY"
+  const dmyMatch = str.match(/^[0-9]{1,2}[/-]([0-9]{1,2})[/-]([0-9]{4})/)
+  if (dmyMatch) {
+    const mo = parseInt(dmyMatch[1], 10)
+    const yr = parseInt(dmyMatch[2], 10)
+    if (mo >= 1 && mo <= 12) {
+      const d = new Date(yr, mo - 1, 1)
+      return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+    }
+  }
+
+  // Try parsing with Date (handles full timestamps or "Thu Oct 01 2026 00:00:00...")
+  const parsed = new Date(str)
+  if (!isNaN(parsed.getTime()) && (str.includes('GMT') || str.includes('T') || str.length > 10)) {
+    return parsed.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+  }
+
+  return str
+}
+
+/**
  * Aggregates sessions grouped by weekly intervals (Monday to Sunday)
  */
 export function groupSessionsByWeek(entries: SessionEntry[]): WeeklySummary[] {

@@ -139,12 +139,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     return ((totals.discountMinutes / totals.totalMinutes) * 100).toFixed(1)
   }, [totals])
 
-  const avgHourlyRate = useMemo(() => {
-    if (filteredEntries.length === 0) return 0
-    const sumRate = filteredEntries.reduce((acc, e) => acc + (Number(e.rate) || 0), 0)
-    return Math.round(sumRate / filteredEntries.length)
-  }, [filteredEntries])
-
   // --- SETTLEMENT METRICS (September 2026 Cutoff Rule) ---
   const settlementMetrics = useMemo(() => {
     // By policy: all earnings before Oct 2026 are 100% Settled / Paid
@@ -591,11 +585,15 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         ) : (
           <div className="analytics-kpi-card">
             <div className="kpi-top">
-              <span>Avg Rate / Hour</span>
-              <IndianRupee size={16} color="#0f6b61" />
+              <span>Total Work Sessions</span>
+              <Layers size={16} color="#0f6b61" />
             </div>
-            <strong style={{ color: '#0f6b61' }}>₹{avgHourlyRate}/hr</strong>
-            <small>Standard service billing rate</small>
+            <strong style={{ color: '#0f6b61' }}>{filteredEntries.length} Sessions</strong>
+            <small>
+              {filteredEntries.length > 0
+                ? `Avg ${formatMinutes(Math.round(totals.effectiveMinutes / filteredEntries.length))} per session`
+                : 'No logged sessions'}
+            </small>
           </div>
         )}
 

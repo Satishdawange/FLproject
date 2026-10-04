@@ -80,6 +80,8 @@ function handleRequest(params) {
       output = handleAddBill(ss, params);
     } else if (action === 'updateBill') {
       output = handleUpdateBill(ss, params);
+    } else if (action === 'getUsers') {
+      output = handleGetUsers(ss);
     } else if (action === 'init') {
       initSheet();
       output = { success: true, message: 'Initialized sheet structure.' };
@@ -145,6 +147,34 @@ function handleLogin(ss, username, password) {
   }
 
   return { success: false, message: 'Invalid username or password' };
+}
+
+/**
+ * Returns all registered users from the Users tab
+ */
+function handleGetUsers(ss) {
+  initSheet();
+  var userSheet = ss.getSheetByName('Users');
+  var data = userSheet.getDataRange().getValues();
+  var users = [];
+
+  for (var i = 1; i < data.length; i++) {
+    var u = String(data[i][0] || '').trim();
+    if (!u) continue;
+    var role = String(data[i][2] || 'read').trim().toLowerCase();
+    var name = String(data[i][3] || data[i][0]).trim();
+    users.push({
+      username: u,
+      name: name,
+      fullName: name,
+      role: role === 'admin' ? 'admin' : 'read'
+    });
+  }
+
+  return {
+    success: true,
+    users: users
+  };
 }
 
 /**
@@ -313,8 +343,9 @@ function handleGetEntries(ss, targetMonth) {
     var sheet = sheets[s];
     var name = sheet.getName().trim();
 
-    // Skip internal metadata tab
-    if (name.toLowerCase() === 'users') continue;
+    // Skip internal metadata and non-session tabs (Users, Bills, Invoices)
+    var lowerName = name.toLowerCase();
+    if (lowerName === 'users' || lowerName === 'bills' || lowerName === 'invoices') continue;
 
     // If targetMonth is provided and this is a month tab for a different month, skip
     var isMonthPattern = /^[0-9]{4}-[0-9]{1,2}$/.test(name);
@@ -394,6 +425,8 @@ function handleGetEntries(ss, targetMonth) {
       var discM = (discMoneyCol >= 0 && row[discMoneyCol] !== '' && row[discMoneyCol] !== null) ? parseNumValue(row[discMoneyCol], 0) : Math.max(0, gross - net);
 
       var entryId = (idCol >= 0 && row[idCol]) ? String(row[idCol]) : (name + '-' + r);
+      var idUpper = entryId.toUpperCase();
+      if (idUpper.indexOf('BILL-') === 0 || idUpper.indexOf('INV-') === 0) continue;
 
       entries.push({
         id: entryId,
@@ -458,7 +491,8 @@ function getOrCreateBillsSheet(ss) {
       'Status',
       'Paid Amount (₹)',
       'Paid On',
-      'Notes'
+      'Notes',
+      'Assigned To'
     ];
     sheet.appendRow(headers);
     var headerRange = sheet.getRange(1, 1, 1, headers.length);
@@ -470,8 +504,67 @@ function getOrCreateBillsSheet(ss) {
     // Format numeric columns
     sheet.getRange('J:L').setNumberFormat('₹#,##0.00');
     sheet.getRange('N:N').setNumberFormat('₹#,##0.00');
+  } else {
+    // Migration: ensure column 17 'Assigned To' exists in pre-existing Bills sheet
+    if (sheet.getLastColumn() < 17) {
+      sheet.getRange(1, 17).setValue('Assigned To');
+      sheet.getRange(1, 17).setBackground('#0f6b61');
+      sheet.getRange(1, 17).setFontColor('#ffffff');
+      sheet.getRange(1, 17).setFontWeight('bold');
+    }
   }
   return sheet;
+}
+
+function formatPeriodDisplayValue(val) {
+  if (!val) return '';
+  if (val instanceof Date) {
+    var months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    return months[val.getMonth()] + ' ' + val.getFullYear();
+  }
+  var str = String(val).trim();
+  if (!str) return '';
+  if (str.toLowerCase() === 'all months' || str.toLowerCase() === 'all time') return 'All Months';
+
+  var monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+  var monthWordMatch = str.match(/^([a-zA-Z]+)[\s,]+([0-9]{4})$/);
+  if (monthWordMatch) {
+    var mWord = monthWordMatch[1].toLowerCase();
+    var yrWord = parseInt(monthWordMatch[2], 10);
+    for (var mi = 0; mi < monthNames.length; mi++) {
+      if (monthNames[mi] === mWord || mWord.indexOf(monthNames[mi].slice(0, 3)) === 0) {
+        return monthNames[mi].charAt(0).toUpperCase() + monthNames[mi].slice(1) + ' ' + yrWord;
+      }
+    }
+  }
+
+  var mIso = str.match(/^([0-9]{4})-([0-9]{1,2})(?:-[0-9]{1,2})?/);
+  if (mIso) {
+    var yr = parseInt(mIso[1], 10);
+    var mo = parseInt(mIso[2], 10);
+    var monthsList = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    if (mo >= 1 && mo <= 12) {
+      return monthsList[mo - 1] + ' ' + yr;
+    }
+  }
+
+  var dmyMatch = str.match(/^[0-9]{1,2}[/-]([0-9]{1,2})[/-]([0-9]{4})/);
+  if (dmyMatch) {
+    var mo2 = parseInt(dmyMatch[1], 10);
+    var yr2 = parseInt(dmyMatch[2], 10);
+    var months2 = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    if (mo2 >= 1 && mo2 <= 12) {
+      return months2[mo2 - 1] + ' ' + yr2;
+    }
+  }
+
+  var parsed = new Date(str);
+  if (!isNaN(parsed.getTime()) && (str.indexOf('GMT') !== -1 || str.indexOf('T') !== -1 || str.length > 10)) {
+    var months3 = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    return months3[parsed.getMonth()] + ' ' + parsed.getFullYear();
+  }
+
+  return str;
 }
 
 function handleGetBills(ss) {
@@ -490,7 +583,7 @@ function handleGetBills(ss) {
     bills.push({
       billId: String(row[0] || ''),
       createdOn: String(row[1] || ''),
-      selectedPeriod: String(row[2] || ''),
+      selectedPeriod: formatPeriodDisplayValue(row[2]),
       client: String(row[3] || ''),
       project: String(row[4] || ''),
       totalSessions: Number(row[5] || 0),
@@ -503,7 +596,8 @@ function handleGetBills(ss) {
       status: String(row[12] || 'Unpaid'),
       paidAmount: row[13] !== '' && row[13] !== null ? Number(row[13]) : 0,
       paidOn: String(row[14] || ''),
-      notes: String(row[15] || '')
+      notes: String(row[15] || ''),
+      assignedTo: String(row[16] || '')
     });
   }
 
@@ -526,10 +620,12 @@ function handleAddBill(ss, data) {
     }
   }
 
+  var formattedPeriod = formatPeriodDisplayValue(data.selectedPeriod || '');
+
   var row = [
     billId,
     data.createdOn || new Date().toISOString(),
-    data.selectedPeriod || '',
+    formattedPeriod,
     data.client || '',
     data.project || '',
     Number(data.totalSessions || 0),
@@ -542,7 +638,8 @@ function handleAddBill(ss, data) {
     data.status || 'Unpaid',
     data.paidAmount !== undefined && data.paidAmount !== '' ? Number(data.paidAmount) : '',
     data.paidOn || '',
-    data.notes || ''
+    data.notes || '',
+    data.assignedTo || ''
   ];
 
   sheet.appendRow(row);
@@ -593,6 +690,11 @@ function handleUpdateBill(ss, data) {
   // Update Notes (col 16 / P)
   if (data.notes !== undefined) {
     sheet.getRange(foundRow, 16).setValue(data.notes);
+  }
+
+  // Update Assigned To (col 17 / Q)
+  if (data.assignedTo !== undefined) {
+    sheet.getRange(foundRow, 17).setValue(data.assignedTo);
   }
 
   return {

@@ -1,4 +1,5 @@
-import type { AuthUser, SessionEntry, BillItem } from '../types'
+import type { AuthUser, SessionEntry, BillItem, UserAccount } from '../types'
+import { formatBillingPeriod } from '../utils/calculations'
 
 
 export interface ApiResponse<T = unknown> {
@@ -8,6 +9,7 @@ export interface ApiResponse<T = unknown> {
   sheetName?: string
   sheets?: string[]
   user?: AuthUser
+  users?: UserAccount[]
   entries?: SessionEntry[]
   bills?: BillItem[]
   count?: number
@@ -68,13 +70,20 @@ export const googleSheetsApi = {
   },
 
   /**
-   * Fetches entries from Google Sheets (either all or specific month)
+   * Fetches entries from Google Sheets (either all or specific month, strictly excluding bills)
    */
   async fetchEntries(url: string, month?: string): Promise<ApiResponse<SessionEntry[]>> {
-    return callGoogleScript<SessionEntry[]>(url, {
+    const res = await callGoogleScript<SessionEntry[]>(url, {
       action: 'getEntries',
       month,
     })
+    if (res.success && Array.isArray(res.entries)) {
+      res.entries = res.entries.filter((e) => {
+        const idStr = String(e.id || '').trim().toUpperCase()
+        return !idStr.startsWith('BILL-') && !idStr.startsWith('INV-')
+      })
+    }
+    return res
   },
 
   /**
@@ -91,18 +100,38 @@ export const googleSheetsApi = {
    * Fetches all registered bills from the 'Bills' tab in Google Sheets
    */
   async getBills(url: string): Promise<ApiResponse<BillItem[]>> {
-    return callGoogleScript<BillItem[]>(url, {
+    const res = await callGoogleScript<BillItem[]>(url, {
       action: 'getBills',
     })
+    if (res.success && Array.isArray(res.bills)) {
+      res.bills = res.bills.map((b) => ({
+        ...b,
+        selectedPeriod: formatBillingPeriod(b.selectedPeriod),
+      }))
+    }
+    return res
   },
 
   /**
    * Appends a new bill entry to the 'Bills' tab in Google Sheets
    */
   async addBill(url: string, bill: BillItem): Promise<ApiResponse> {
+    const sanitizedBill = {
+      ...bill,
+      selectedPeriod: formatBillingPeriod(bill.selectedPeriod),
+    }
     return callGoogleScript(url, {
       action: 'addBill',
-      ...bill,
+      ...sanitizedBill,
+    })
+  },
+
+  /**
+   * Fetches users from the 'Users' tab in Google Sheets
+   */
+  async getUsers(url: string): Promise<ApiResponse<UserAccount[]>> {
+    return callGoogleScript<UserAccount[]>(url, {
+      action: 'getUsers',
     })
   },
 
@@ -117,6 +146,7 @@ export const googleSheetsApi = {
       paidAmount?: number | string
       paidOn?: string
       notes?: string
+      assignedTo?: string
     }
   ): Promise<ApiResponse> {
     return callGoogleScript(url, {

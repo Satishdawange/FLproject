@@ -24,6 +24,7 @@ import {
   Menu,
   BarChart3,
   Receipt,
+  Percent,
 } from 'lucide-react'
 
 import * as XLSX from 'xlsx'
@@ -31,7 +32,7 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
 import './App.css'
-import type { AuthUser, SessionEntry, SheetConfig, SheetItem, BillItem } from './types'
+import type { AuthUser, SessionEntry, SheetConfig, SheetItem, BillItem, UserAccount } from './types'
 
 import {
   formatMinutes,
@@ -47,6 +48,9 @@ import {
   saveSheetEntriesCache,
   loadSheetBillsCache,
   saveSheetBillsCache,
+  loadSheetUsersCache,
+  saveSheetUsersCache,
+  DEFAULT_SHEET_USERS,
   addCustomSheetUrl,
   removeCustomSheetUrl,
   cacheSheetName,
@@ -135,10 +139,57 @@ export default function App() {
     }
   })
 
-  // View & UI Navigation
+  // Users loaded from active sheet cache
+  const [availableUsers, setAvailableUsers] = useState<UserAccount[]>(() => {
+    const initialUrl = getDefaultSheetUrl()
+    try {
+      const savedUrl = localStorage.getItem('fl_active_sheet_url') || initialUrl
+      return loadSheetUsersCache(savedUrl)
+    } catch {
+      return DEFAULT_SHEET_USERS
+    }
+  })
+
+  // Customer bill matching helper
+  const isAssignedToCurrentCustomer = useCallback((bill: BillItem, user: AuthUser | null) => {
+    if (!user || !bill.assignedTo) return false
+    const assigned = bill.assignedTo.trim().toLowerCase()
+    const u = (user.username || '').trim().toLowerCase()
+    const n = (user.name || '').trim().toLowerCase()
+    const fn = (user.fullName || '').trim().toLowerCase()
+    return Boolean(assigned === u || (n && assigned === n) || (fn && assigned === fn))
+  }, [])
+
+  // Dynamic counts for customer-assigned bills & invoices
+  const myAssignedBillsCount = useMemo(() => {
+    return bills.filter((b) => isAssignedToCurrentCustomer(b, currentUser)).length
+  }, [bills, currentUser, isAssignedToCurrentCustomer])
+
+  const myAssignedInvoicesCount = useMemo(() => {
+    return bills.filter(
+      (b) =>
+        isAssignedToCurrentCustomer(b, currentUser) &&
+        (b.status === 'Half Paid' || b.status === 'Fully Paid')
+    ).length
+  }, [bills, currentUser, isAssignedToCurrentCustomer])
+
+  // View & UI Navigation (by default show analytics dashboard every time for customer)
   const [activeView, setActiveView] = useState<
-    'ledger' | 'daily' | 'weekly' | 'monthly' | 'analytics' | 'bills'
-  >('ledger')
+    'ledger' | 'daily' | 'weekly' | 'monthly' | 'analytics' | 'bills' | 'my-bills' | 'my-invoices'
+  >(() => {
+    try {
+      const saved = localStorage.getItem('fl_auth_user') || sessionStorage.getItem('fl_auth_user')
+      if (saved) {
+        const u = JSON.parse(saved)
+        if (u && u.role !== 'admin') {
+          return 'analytics'
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 'ledger'
+  })
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [period, setPeriod] = useState<'All time' | 'Today' | 'This week' | 'This month' | 'Custom'>('This month')
   // Client filter states
@@ -218,8 +269,12 @@ export default function App() {
 
   // Save entries to localStorage cache for a specific sheet URL
   const saveEntriesCache = (newEntries: SessionEntry[], urlToUse = activeSheetUrl) => {
-    setEntries(newEntries)
-    saveSheetEntriesCache(urlToUse, newEntries)
+    const pureEntries = (newEntries || []).filter((e) => {
+      const idUpper = String(e?.id || '').toUpperCase()
+      return !idUpper.startsWith('BILL-') && !idUpper.startsWith('INV-')
+    })
+    setEntries(pureEntries)
+    saveSheetEntriesCache(urlToUse, pureEntries)
   }
 
   // Save bills to localStorage cache for a specific sheet URL
@@ -246,17 +301,23 @@ export default function App() {
       setSyncStatus('Fetching records & bills from Google Sheet...')
 
       try {
-        // Fetch connection ping, entries, and bills concurrently
-        const [pingRes, res, billsRes] = await Promise.all([
+        // Fetch connection ping, entries, bills, and registered users concurrently
+        const [pingRes, res, billsRes, usersRes] = await Promise.all([
           googleSheetsApi.testConnection(targetUrl).catch(() => null),
           googleSheetsApi.fetchEntries(targetUrl),
           googleSheetsApi.getBills(targetUrl).catch(() => ({ success: false, bills: [] })),
+          googleSheetsApi.getUsers(targetUrl).catch(() => ({ success: false, users: [] })),
         ])
 
         const liveTitle = pingRes?.sheetName || res.sheetName
         if (liveTitle) {
           cacheSheetName(targetUrl, liveTitle)
           setAvailableSheets(getAvailableSheets())
+        }
+
+        if (usersRes && usersRes.success && Array.isArray(usersRes.users) && usersRes.users.length > 0) {
+          setAvailableUsers(usersRes.users)
+          saveSheetUsersCache(targetUrl, usersRes.users)
         }
 
         if (res.success && Array.isArray(res.entries)) {
@@ -310,11 +371,13 @@ export default function App() {
     setSheetConfig(updatedConfig)
     localStorage.setItem('fl_sheet_config', JSON.stringify(updatedConfig))
 
-    // 1. Immediately display cached entries and bills for this sheet (zero delay)
+    // 1. Immediately display cached entries, bills, and users for this sheet (zero delay)
     const cached = loadSheetEntriesCache(newUrl)
     setEntries(cached)
     const cachedBills = loadSheetBillsCache(newUrl)
     setBills(cachedBills)
+    const cachedUsers = loadSheetUsersCache(newUrl)
+    setAvailableUsers(cachedUsers)
 
     // 2. Fetch fresh entries & bills from the selected sheet
     handleSyncWithGoogleSheets(newUrl)
@@ -370,6 +433,11 @@ export default function App() {
   // Login handler - persists credentials across sessions until explicit logout or password change
   const handleLoginSuccess = (user: AuthUser) => {
     setCurrentUser(user)
+    if (user.role !== 'admin') {
+      setActiveView('analytics')
+    } else {
+      setActiveView('ledger')
+    }
     try {
       localStorage.setItem('fl_auth_user', JSON.stringify(user))
       sessionStorage.setItem('fl_auth_user', JSON.stringify(user))
@@ -502,7 +570,12 @@ export default function App() {
     const set = new Set<string>()
     set.add('Jahnavi M')
     customClients.forEach((c) => c && set.add(c))
-    entries.forEach((e) => e.client && set.add(e.client))
+    entries.forEach((e) => {
+      const idUpper = String(e?.id || '').toUpperCase()
+      if (!idUpper.startsWith('BILL-') && !idUpper.startsWith('INV-') && e?.client) {
+        set.add(e.client)
+      }
+    })
     return Array.from(set).sort()
   }, [entries, customClients])
 
@@ -511,7 +584,12 @@ export default function App() {
     set.add('Dolby')
     set.add('Equinix')
     customProjects.forEach((p) => p && set.add(p))
-    entries.forEach((e) => e.project && set.add(e.project))
+    entries.forEach((e) => {
+      const idUpper = String(e?.id || '').toUpperCase()
+      if (!idUpper.startsWith('BILL-') && !idUpper.startsWith('INV-') && e?.project) {
+        set.add(e.project)
+      }
+    })
     return Array.from(set).sort()
   }, [entries, customProjects])
 
@@ -523,6 +601,9 @@ export default function App() {
 
     return entries.filter((entry) => {
       if (!entry) return false
+
+      const entryId = String(entry.id || '').toUpperCase()
+      if (entryId.startsWith('BILL-') || entryId.startsWith('INV-')) return false
 
       const entryClient = String(entry.client || '').trim()
       const entryProject = String(entry.project || '').trim()
@@ -672,13 +753,6 @@ export default function App() {
   const dailySummaries = useMemo(() => groupSessionsByDay(filteredEntries), [filteredEntries])
   const weeklySummaries = useMemo(() => groupSessionsByWeek(filteredEntries), [filteredEntries])
   const monthlySummaries = useMemo(() => groupSessionsByMonth(filteredEntries), [filteredEntries])
-
-  // Average Hourly Rate for Customer KPI
-  const avgHourlyRate = useMemo(() => {
-    if (filteredEntries.length === 0) return 0
-    const sum = filteredEntries.reduce((acc, e) => acc + (Number(e.rate) || 0), 0)
-    return Math.round(sum / filteredEntries.length)
-  }, [filteredEntries])
 
   // Full Name of logged in user
   const userFullName = useMemo(() => {
@@ -837,16 +911,21 @@ export default function App() {
     XLSX.writeFile(workbook, `satish-servicenow-support-ledger-${today}.xlsx`)
   }
 
-  // PDF Report Export (excludes earned money for Customer)
+  // PDF Report Export (excludes earned money for Customer, completely avoids text overflow)
   const handleExportPdf = () => {
     const doc = new jsPDF()
 
     doc.setFillColor(15, 107, 97)
     doc.rect(0, 0, 210, 24, 'F')
     doc.setTextColor(255, 255, 255)
-    doc.setFontSize(15)
+    doc.setFontSize(13)
     doc.setFont('helvetica', 'bold')
-    doc.text(isAdmin ? 'SATISH SERVICENOW SUPPORT - TIME & BILLING REPORT' : 'SATISH SERVICENOW SUPPORT - WORK SESSIONS REPORT', 14, 16)
+    doc.text(
+      isAdmin ? 'SATISH SERVICENOW SUPPORT - TIME & BILLING REPORT' : 'SATISH SERVICENOW SUPPORT - WORK SESSIONS REPORT',
+      14,
+      15,
+      { maxWidth: 182 }
+    )
 
     const clientLabel = isClientSearchMode
       ? `Client: "${clientSearchText || 'Any'}"`
@@ -859,26 +938,22 @@ export default function App() {
     const appliedFilters = [periodLabel, clientLabel, projectLabel, searchFilterStr].filter(Boolean).join(' | ')
 
     doc.setTextColor(50, 60, 55)
-    doc.setFontSize(8.5)
+    doc.setFontSize(8)
     doc.setFont('helvetica', 'normal')
-    doc.text(
-      `Filters Applied: ${appliedFilters} | Sessions: ${filteredEntries.length} | Generated: ${new Date().toLocaleDateString('en-IN')}`,
-      14,
-      32
-    )
-    if (isAdmin) {
-      doc.text(
-        `Effective Hours: ${formatMinutes(totals.effectiveMinutes)} | Gross: ${formatRupees(totals.grossMoney)} | Net: ${formatRupees(totals.netMoney)} | Settled (Paid): ${formatRupees(settlementMetrics.totalSettledPaid)} | Pending Due: ${formatRupees(settlementMetrics.totalPendingDue)}`,
-        14,
-        38
-      )
-    } else {
-      doc.text(
-        `Effective Hours: ${formatMinutes(totals.effectiveMinutes)} | Total Duration: ${formatMinutes(totals.totalMinutes)} | Time Discount: -${formatMinutes(totals.discountMinutes)}`,
-        14,
-        38
-      )
-    }
+
+    const filterText = `Filters: ${appliedFilters} | Sessions: ${filteredEntries.length} | Generated: ${new Date().toLocaleDateString('en-IN')}`
+    const filterLines = doc.splitTextToSize(filterText, 182)
+    doc.text(filterLines, 14, 30)
+
+    let currentMetaY = 30 + filterLines.length * 3.8
+
+    const metricsText = isAdmin
+      ? `Effective Hours: ${formatMinutes(totals.effectiveMinutes)} | Gross: ${formatRupees(totals.grossMoney)} | Net: ${formatRupees(totals.netMoney)} | Settled (Paid): ${formatRupees(settlementMetrics.totalSettledPaid)} | Pending Due: ${formatRupees(settlementMetrics.totalPendingDue)}`
+      : `Effective Hours: ${formatMinutes(totals.effectiveMinutes)} | Total Duration: ${formatMinutes(totals.totalMinutes)} | Time Discount: -${formatMinutes(totals.discountMinutes)}`
+
+    const metricLines = doc.splitTextToSize(metricsText, 182)
+    doc.text(metricLines, 14, currentMetaY)
+    currentMetaY += metricLines.length * 3.8
 
     const tableRows = filteredEntries.map((e) => {
       const row = [
@@ -889,7 +964,7 @@ export default function App() {
         formatMinutes(e.totalMinutes),
         e.discountMinutes ? `-${formatMinutes(e.discountMinutes)}` : '0m',
         formatMinutes(e.effectiveMinutes),
-        `Rs. ${e.rate}`,
+        `Rs. ${e.rate}/hr`,
       ]
       if (isAdmin) {
         row.push(`Rs. ${Math.round(e.moneyWithDiscount).toLocaleString('en-IN')}`)
@@ -905,19 +980,43 @@ export default function App() {
       'Total',
       'Disc.',
       'Effective',
-      'Rate/hr',
+      'Rate',
     ]
     if (isAdmin) {
       headers.push('Net (INR)')
     }
 
+    const tableStartY = Math.max(currentMetaY + 3, 42)
+
     autoTable(doc, {
-      startY: 44,
+      startY: tableStartY,
+      margin: { left: 14, right: 14 },
       head: [headers],
       body: tableRows,
-      headStyles: { fillColor: [15, 107, 97], fontSize: 8 },
-      styles: { fontSize: 7.5, cellPadding: 2 },
-      columnStyles: isAdmin ? { 8: { halign: 'right' } } : {},
+      headStyles: { fillColor: [15, 107, 97], fontSize: 7.5, fontStyle: 'bold' },
+      styles: { fontSize: 7, cellPadding: 2, overflow: 'linebreak' },
+      columnStyles: isAdmin
+        ? {
+            0: { cellWidth: 18 },
+            1: { cellWidth: 24 },
+            2: { cellWidth: 24 },
+            3: { cellWidth: 22 },
+            4: { cellWidth: 16 },
+            5: { cellWidth: 16 },
+            6: { cellWidth: 16 },
+            7: { cellWidth: 18 },
+            8: { cellWidth: 28, halign: 'right' },
+          }
+        : {
+            0: { cellWidth: 18 },
+            1: { cellWidth: 32 },
+            2: { cellWidth: 32 },
+            3: { cellWidth: 26 },
+            4: { cellWidth: 20 },
+            5: { cellWidth: 18 },
+            6: { cellWidth: 18 },
+            7: { cellWidth: 18 },
+          },
     })
 
     doc.save(`satish-servicenow-support-report-${today}.pdf`)
@@ -990,6 +1089,18 @@ export default function App() {
         {/* Navigation list */}
         <nav className="nav-list">
           <p className="nav-label">Workspace Views</p>
+          {!isAdmin && (
+            <button
+              className={`nav-item ${activeView === 'analytics' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveView('analytics')
+                setMobileNavOpen(false)
+              }}
+            >
+              <BarChart3 size={17} /> Analytics Dashboard
+            </button>
+          )}
+
           <button
             className={`nav-item ${activeView === 'ledger' ? 'active' : ''}`}
             onClick={() => {
@@ -1031,17 +1142,19 @@ export default function App() {
             <Layers size={17} /> Monthly Summary
           </button>
 
-          <button
-            className={`nav-item ${activeView === 'analytics' ? 'active' : ''}`}
-            onClick={() => {
-              setActiveView('analytics')
-              setMobileNavOpen(false)
-            }}
-          >
-            <BarChart3 size={17} /> Analytics Dashboard
-          </button>
-
           {isAdmin && (
+            <button
+              className={`nav-item ${activeView === 'analytics' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveView('analytics')
+                setMobileNavOpen(false)
+              }}
+            >
+              <BarChart3 size={17} /> Analytics Dashboard
+            </button>
+          )}
+
+          {isAdmin ? (
             <button
               className={`nav-item ${activeView === 'bills' ? 'active' : ''}`}
               onClick={() => {
@@ -1052,6 +1165,30 @@ export default function App() {
               <Receipt size={17} /> Bills &amp; Invoices
               <span className="nav-badge">{bills.length}</span>
             </button>
+          ) : (
+            <>
+              <button
+                className={`nav-item ${activeView === 'my-bills' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveView('my-bills')
+                  setMobileNavOpen(false)
+                }}
+              >
+                <Receipt size={17} /> My Bills
+                <span className="nav-badge">{myAssignedBillsCount}</span>
+              </button>
+
+              <button
+                className={`nav-item ${activeView === 'my-invoices' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveView('my-invoices')
+                  setMobileNavOpen(false)
+                }}
+              >
+                <FileText size={17} /> My Invoices
+                <span className="nav-badge">{myAssignedInvoicesCount}</span>
+              </button>
+            </>
           )}
 
           {isAdmin && (
@@ -1276,7 +1413,7 @@ export default function App() {
           </section>
 
           {/* SUMMARY CARDS (KPIs) - Role-Aware (Excludes earned money for Customer) */}
-          {activeView !== 'analytics' && activeView !== 'bills' && (
+          {activeView !== 'analytics' && activeView !== 'bills' && activeView !== 'my-bills' && activeView !== 'my-invoices' && (
             <section className="summary-grid">
               <div className="summary-card highlight">
                 <div className="card-top">
@@ -1345,14 +1482,16 @@ export default function App() {
               ) : (
                 <div className="summary-card">
                   <div className="card-top">
-                    <span className="card-label">Hourly Rate</span>
-                    <span className="card-icon green">
-                      <IndianRupee size={16} />
+                    <span className="card-label">Time Discount Deducted</span>
+                    <span className="card-icon orange">
+                      <Percent size={16} />
                     </span>
                   </div>
-                  <strong style={{ color: '#0f6b61' }}>₹{avgHourlyRate}/hr</strong>
+                  <strong style={{ color: '#b45309' }}>{formatMinutes(totals.discountMinutes)}</strong>
                   <small style={{ color: '#88948c' }}>
-                    Average rate across {new Set(filteredEntries.map((e) => e.client)).size} clients
+                    {totals.totalMinutes > 0
+                      ? `${((totals.discountMinutes / totals.totalMinutes) * 100).toFixed(1)}% total duration discount`
+                      : '0m discount applied'}
                   </small>
                 </div>
               )}
@@ -1376,6 +1515,14 @@ export default function App() {
           <section className="toolbar">
             {/* View Switcher Tabs */}
             <div className="view-tabs">
+              {!isAdmin && (
+                <button
+                  className={`view-tab-btn ${activeView === 'analytics' ? 'selected' : ''}`}
+                  onClick={() => setActiveView('analytics')}
+                >
+                  <BarChart3 size={15} /> Analytics Dashboard
+                </button>
+              )}
               <button
                 className={`view-tab-btn ${activeView === 'ledger' ? 'selected' : ''}`}
                 onClick={() => setActiveView('ledger')}
@@ -1400,24 +1547,41 @@ export default function App() {
               >
                 <Layers size={15} /> Monthly Summary ({monthlySummaries.length})
               </button>
-              <button
-                className={`view-tab-btn ${activeView === 'analytics' ? 'selected' : ''}`}
-                onClick={() => setActiveView('analytics')}
-              >
-                <BarChart3 size={15} /> Analytics Dashboard
-              </button>
               {isAdmin && (
+                <button
+                  className={`view-tab-btn ${activeView === 'analytics' ? 'selected' : ''}`}
+                  onClick={() => setActiveView('analytics')}
+                >
+                  <BarChart3 size={15} /> Analytics Dashboard
+                </button>
+              )}
+              {isAdmin ? (
                 <button
                   className={`view-tab-btn ${activeView === 'bills' ? 'selected' : ''}`}
                   onClick={() => setActiveView('bills')}
                 >
                   <Receipt size={15} /> Bills &amp; Invoices ({bills.length})
                 </button>
+              ) : (
+                <>
+                  <button
+                    className={`view-tab-btn ${activeView === 'my-bills' ? 'selected' : ''}`}
+                    onClick={() => setActiveView('my-bills')}
+                  >
+                    <Receipt size={15} /> My Bills ({myAssignedBillsCount})
+                  </button>
+                  <button
+                    className={`view-tab-btn ${activeView === 'my-invoices' ? 'selected' : ''}`}
+                    onClick={() => setActiveView('my-invoices')}
+                  >
+                    <FileText size={15} /> My Invoices ({myAssignedInvoicesCount})
+                  </button>
+                </>
               )}
             </div>
 
             {/* Filter controls */}
-            {activeView !== 'analytics' && activeView !== 'bills' && (
+            {activeView !== 'analytics' && activeView !== 'bills' && activeView !== 'my-bills' && activeView !== 'my-invoices' && (
               <div className="toolbar-actions">
               {/* Period dropdown */}
               <select
@@ -1552,9 +1716,35 @@ export default function App() {
             <BillsView
               bills={bills}
               userRole={currentUser.role}
+              currentUser={currentUser}
+              viewMode="all"
               sheetName={sheetConfig.sheetName}
               onUpdateBill={handleUpdateBill}
               onOpenCreateChallan={() => setShowChallanModal(true)}
+              onRefreshBills={() => handleSyncWithGoogleSheets(activeSheetUrl)}
+              isSyncing={syncing}
+            />
+          )}
+
+          {activeView === 'my-bills' && (
+            <BillsView
+              bills={bills}
+              userRole={currentUser.role}
+              currentUser={currentUser}
+              viewMode="my-bills"
+              sheetName={sheetConfig.sheetName}
+              onRefreshBills={() => handleSyncWithGoogleSheets(activeSheetUrl)}
+              isSyncing={syncing}
+            />
+          )}
+
+          {activeView === 'my-invoices' && (
+            <BillsView
+              bills={bills}
+              userRole={currentUser.role}
+              currentUser={currentUser}
+              viewMode="my-invoices"
+              sheetName={sheetConfig.sheetName}
               onRefreshBills={() => handleSyncWithGoogleSheets(activeSheetUrl)}
               isSyncing={syncing}
             />
@@ -1811,6 +2001,7 @@ export default function App() {
         <ChallanModal
           entries={entries}
           initialClient={selectedClient}
+          availableUsers={availableUsers}
           onClose={() => setShowChallanModal(false)}
           onSyncBill={handleSyncBill}
         />

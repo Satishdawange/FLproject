@@ -161,7 +161,7 @@ export const WeeklyBreakdownView: React.FC<WeeklyBreakdownViewProps> = ({
                         <th>Total</th>
                         <th>Discount</th>
                         <th>Effective</th>
-                        <th>Rate</th>
+                        {isAdmin && <th>Rate</th>}
                         {isAdmin && <th style={{ textAlign: 'right' }}>Gross</th>}
                         {isAdmin && <th style={{ textAlign: 'right' }}>Net Final</th>}
                       </tr>
@@ -199,7 +199,7 @@ export const WeeklyBreakdownView: React.FC<WeeklyBreakdownViewProps> = ({
                               {formatMinutes(session.effectiveMinutes)}
                             </strong>
                           </td>
-                          <td>₹{session.rate}/hr</td>
+                          {isAdmin && <td>₹{session.rate}/hr</td>}
                           {isAdmin && (
                             <td style={{ textAlign: 'right', color: '#626f65' }}>
                               {formatRupees(session.moneyWithoutDiscount)}

@@ -1,5 +1,12 @@
 export type UserRole = 'admin' | 'read'
 
+export interface UserAccount {
+  username: string
+  name?: string
+  fullName?: string
+  role: UserRole
+}
+
 export interface AuthUser {
   username: string
   name?: string
@@ -105,5 +112,6 @@ export interface BillItem {
   paidAmount?: number
   paidOn?: string
   notes?: string
+  assignedTo?: string // Customer account assigned to this bill
 }
 

@@ -11,20 +11,25 @@ import {
   Sparkles,
   RefreshCw,
   Plus,
+  Receipt,
+  UserCheck,
 } from 'lucide-react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
-import type { BillItem, BillPaymentStatus, UserRole } from '../types'
-import { formatMinutes, formatRupees } from '../utils/calculations'
-import { BillDetailModal } from './BillDetailModal'
+import type { BillItem, BillPaymentStatus, UserRole, AuthUser } from '../types'
+import { formatMinutes, formatRupees, formatBillingPeriod } from '../utils/calculations'
+import { BillDetailModal, generateBillStatementPdf } from './BillDetailModal'
+import { InvoiceDetailModal, generateInvoicePdf } from './InvoiceDetailModal'
 
 interface BillsViewProps {
   bills: BillItem[]
   userRole?: UserRole
+  currentUser?: AuthUser | null
+  viewMode?: 'all' | 'my-bills' | 'my-invoices'
   sheetName?: string
-  onUpdateBill: (updatedBill: BillItem) => Promise<boolean>
-  onOpenCreateChallan: () => void
+  onUpdateBill?: (updatedBill: BillItem) => Promise<boolean>
+  onOpenCreateChallan?: () => void
   onRefreshBills: () => void
   isSyncing?: boolean
 }
@@ -32,6 +37,8 @@ interface BillsViewProps {
 export const BillsView: React.FC<BillsViewProps> = ({
   bills,
   userRole = 'admin',
+  currentUser = null,
+  viewMode = 'all',
   sheetName = 'Google Sheet',
   onUpdateBill,
   onOpenCreateChallan,
@@ -39,10 +46,15 @@ export const BillsView: React.FC<BillsViewProps> = ({
   isSyncing = false,
 }) => {
   const isAdmin = userRole === 'admin'
+  const isCustomer = !isAdmin
+  const isMyInvoicesMode = viewMode === 'my-invoices'
+  const isMyBillsMode = viewMode === 'my-bills'
+
   const [statusFilter, setStatusFilter] = useState<'All' | BillPaymentStatus>('All')
   const [selectedClient, setSelectedClient] = useState<string>('All clients')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedBillForModal, setSelectedBillForModal] = useState<BillItem | null>(null)
+  const [selectedBillForInvoiceModal, setSelectedBillForInvoiceModal] = useState<BillItem | null>(null)
 
   // Export Menu Popover State
   const [showExportMenu, setShowExportMenu] = useState(false)
@@ -60,16 +72,42 @@ export const BillsView: React.FC<BillsViewProps> = ({
     }
   }, [showExportMenu])
 
-  // Extract unique clients
+  // Helper: check if a bill is assigned to current logged in customer
+  const isAssignedToCurrentUser = (b: BillItem): boolean => {
+    if (!currentUser || !b.assignedTo) return false
+    const assigned = b.assignedTo.trim().toLowerCase()
+    const u = (currentUser.username || '').trim().toLowerCase()
+    const n = (currentUser.name || '').trim().toLowerCase()
+    const fn = (currentUser.fullName || '').trim().toLowerCase()
+    return Boolean(assigned === u || (n && assigned === n) || (fn && assigned === fn))
+  }
+
+  // Base bills scoped by viewMode
+  const baseBills = useMemo(() => {
+    if (isMyInvoicesMode) {
+      // Invoices section: only assigned bills that are Half Paid or Fully Paid
+      return bills.filter(
+        (b) => isAssignedToCurrentUser(b) && (b.status === 'Half Paid' || b.status === 'Fully Paid')
+      )
+    }
+    if (isMyBillsMode) {
+      // My Bills section: all bills assigned to this customer
+      return bills.filter(isAssignedToCurrentUser)
+    }
+    // Admin / All view
+    return bills
+  }, [bills, isMyInvoicesMode, isMyBillsMode, currentUser])
+
+  // Extract unique clients from base bills
   const availableClients = useMemo(() => {
     const set = new Set<string>()
-    bills.forEach((b) => b.client && set.add(b.client))
+    baseBills.forEach((b) => b.client && set.add(b.client))
     return Array.from(set).sort()
-  }, [bills])
+  }, [baseBills])
 
-  // Filtered bills
+  // Filtered bills based on toolbar filters
   const filteredBills = useMemo(() => {
-    return bills.filter((b) => {
+    return baseBills.filter((b) => {
       // Status filter
       if (statusFilter !== 'All' && b.status !== statusFilter) {
         return false
@@ -80,16 +118,16 @@ export const BillsView: React.FC<BillsViewProps> = ({
         return false
       }
 
-      // Search query across Bill ID, client, project, notes, period
+      // Search query across Bill ID, client, project, notes, period, assignedTo
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim()
-        const text = `${b.billId} ${b.client} ${b.project} ${b.selectedPeriod} ${b.notes || ''}`.toLowerCase()
+        const text = `${b.billId} ${b.client} ${b.project} ${b.selectedPeriod} ${formatBillingPeriod(b.selectedPeriod)} ${b.notes || ''} ${b.assignedTo || ''}`.toLowerCase()
         if (!text.includes(q)) return false
       }
 
       return true
     })
-  }, [bills, statusFilter, selectedClient, searchQuery])
+  }, [baseBills, statusFilter, selectedClient, searchQuery])
 
   // Financial aggregates for bills
   const billMetrics = useMemo(() => {
@@ -127,83 +165,125 @@ export const BillsView: React.FC<BillsViewProps> = ({
     }
   }, [filteredBills])
 
-  // PDF Export of Filtered Bills List
+  // PDF Export of Filtered Bills List (completely avoids text/column overflow)
   const handleExportFilteredBillsPdf = () => {
     const doc = new jsPDF('landscape')
     const today = new Date().toLocaleDateString('en-IN')
 
-    // Header banner
+    const title = isMyInvoicesMode
+      ? 'SATISH SERVICENOW SUPPORT - MY OFFICIAL INVOICES REGISTER'
+      : isMyBillsMode
+      ? 'SATISH SERVICENOW SUPPORT - MY BILLS & STATEMENTS REGISTER'
+      : 'SATISH SERVICENOW SUPPORT - BILLS & RECEIVABLES REGISTER'
+
+    // Header styling (297mm wide landscape, usable 269mm from 14 to 283)
     doc.setFillColor(15, 107, 97)
     doc.rect(0, 0, 297, 24, 'F')
     doc.setTextColor(255, 255, 255)
-    doc.setFontSize(14)
+    doc.setFontSize(13)
     doc.setFont('helvetica', 'bold')
-    doc.text('SATISH SERVICENOW SUPPORT - BILLS & RECEIVABLES REGISTER', 14, 16)
+    doc.text(title, 14, 15, { maxWidth: 175 })
 
-    doc.setFontSize(9)
-    doc.setFont('helvetica', 'normal')
-    doc.text(`Generated: ${today} | Sheet: ${sheetName}`, 283, 16, { align: 'right' })
-
-    // Active Filters Info
-    doc.setTextColor(50, 60, 55)
     doc.setFontSize(8.5)
-    doc.text(
-      `Filters Applied: Status: ${statusFilter} | Client: ${selectedClient} | Search: "${searchQuery || 'None'}" | Count: ${filteredBills.length}`,
-      14,
-      32
-    )
+    doc.setFont('helvetica', 'normal')
+    const userLabel = currentUser ? `Account: ${currentUser.fullName || currentUser.username} | ` : ''
+    doc.text(`${userLabel}Generated: ${today}`, 283, 15, { align: 'right', maxWidth: 90 })
 
-    doc.text(
-      `Total Billed: Rs. ${billMetrics.totalBilled.toLocaleString('en-IN')} | Total Collected: Rs. ${billMetrics.totalPaid.toLocaleString('en-IN')} | Outstanding Balance: Rs. ${billMetrics.outstanding.toLocaleString('en-IN')}`,
-      14,
-      38
-    )
+    // Active Filters and Financial Metrics (auto-wrapped within 269mm)
+    doc.setTextColor(50, 60, 55)
+    doc.setFontSize(8)
+    doc.setFont('helvetica', 'normal')
+
+    const filterText = `Filters Applied: Status: ${statusFilter} | Client: ${selectedClient} | Search: "${searchQuery || 'None'}" | Count: ${filteredBills.length} records | Sheet: ${sheetName}`
+    const filterLines = doc.splitTextToSize(filterText, 269)
+    doc.text(filterLines, 14, 30)
+
+    let currentMetaY = 30 + filterLines.length * 3.8
+
+    const metricsText = `Total Billed: Rs. ${billMetrics.totalBilled.toLocaleString('en-IN')} | Total Settled/Paid: Rs. ${billMetrics.totalPaid.toLocaleString('en-IN')} | Outstanding Balance: Rs. ${billMetrics.outstanding.toLocaleString('en-IN')}`
+    const metricLines = doc.splitTextToSize(metricsText, 269)
+    doc.text(metricLines, 14, currentMetaY)
+    currentMetaY += metricLines.length * 3.8
 
     const tableRows = filteredBills.map((b) => {
       const remaining = Math.max(0, b.netAmount - (b.paidAmount || (b.status === 'Fully Paid' ? b.netAmount : 0)))
-      return [
-        b.billId,
+      const row = [
+        isMyInvoicesMode ? `INV-${b.billId.replace('BILL-', '')}` : b.billId,
         b.createdOn,
-        b.selectedPeriod,
+        formatBillingPeriod(b.selectedPeriod),
         b.client,
         b.project,
+      ]
+      if (!isCustomer) {
+        row.push(b.assignedTo || '—')
+      }
+      row.push(
         `${formatMinutes(b.effectiveMinutes)} (${b.totalSessions} sessions)`,
         `Rs. ${b.netAmount.toLocaleString('en-IN')}`,
         b.status,
         b.paidAmount ? `Rs. ${b.paidAmount.toLocaleString('en-IN')}` : '—',
-        b.paidOn || '—',
-        remaining > 0 ? `Rs. ${remaining.toLocaleString('en-IN')}` : '₹0 (Settled)',
-      ]
+        remaining > 0 ? `Rs. ${remaining.toLocaleString('en-IN')}` : 'Rs. 0 (Settled)'
+      )
+      return row
     })
+
+    const headers = [
+      isMyInvoicesMode ? 'Invoice ID' : 'Bill ID',
+      'Created On',
+      'Period',
+      'Client',
+      'Project',
+    ]
+    if (!isCustomer) {
+      headers.push('Assigned To')
+    }
+    headers.push(
+      'Time (Sessions)',
+      'Net Billed',
+      'Status',
+      'Paid Amount',
+      'Outstanding Due'
+    )
+
+    const tableStartY = Math.max(currentMetaY + 3, 42)
 
     autoTable(doc, {
-      startY: 44,
-      head: [
-        [
-          'Bill ID',
-          'Created On',
-          'Period',
-          'Client',
-          'Project',
-          'Time (Sessions)',
-          'Net Billed',
-          'Status',
-          'Paid Amount',
-          'Paid On',
-          'Outstanding Due',
-        ],
-      ],
-      body: tableRows.length > 0 ? tableRows : [['—', '—', 'No bills match active filters', '—', '—', '—', '—', '—', '—', '—', '—']],
-      headStyles: { fillColor: [15, 107, 97], fontSize: 8, fontStyle: 'bold' },
-      styles: { fontSize: 7.5, cellPadding: 2 },
-      columnStyles: {
-        6: { halign: 'right' },
-        8: { halign: 'right' },
-        10: { halign: 'right' },
-      },
+      startY: tableStartY,
+      margin: { left: 14, right: 14 },
+      head: [headers],
+      body: tableRows.length > 0 ? tableRows : [['—', '—', 'No records match active filters', '—', '—', '—', '—', '—', '—', '—']],
+      headStyles: { fillColor: [15, 107, 97], fontSize: 7.5, fontStyle: 'bold' },
+      styles: { fontSize: 7, cellPadding: 2, overflow: 'linebreak' },
+      columnStyles: isCustomer
+        ? {
+            0: { cellWidth: 25 },
+            1: { cellWidth: 22 },
+            2: { cellWidth: 26 },
+            3: { cellWidth: 30 },
+            4: { cellWidth: 30 },
+            5: { cellWidth: 28 },
+            6: { cellWidth: 26, halign: 'right' },
+            7: { cellWidth: 24 },
+            8: { cellWidth: 26, halign: 'right' },
+            9: { cellWidth: 32, halign: 'right' },
+          }
+        : {
+            0: { cellWidth: 24 },
+            1: { cellWidth: 22 },
+            2: { cellWidth: 24 },
+            3: { cellWidth: 26 },
+            4: { cellWidth: 26 },
+            5: { cellWidth: 22 },
+            6: { cellWidth: 26 },
+            7: { cellWidth: 24, halign: 'right' },
+            8: { cellWidth: 22 },
+            9: { cellWidth: 24, halign: 'right' },
+            10: { cellWidth: 29, halign: 'right' },
+          },
     })
 
-    doc.save(`bills-register-${new Date().toISOString().slice(0, 10)}.pdf`)
+    const safeName = isMyInvoicesMode ? 'my-invoices' : isMyBillsMode ? 'my-bills' : 'bills-register'
+    doc.save(`${safeName}-${new Date().toISOString().slice(0, 10)}.pdf`)
   }
 
   // Excel Export of Filtered Bills List
@@ -211,12 +291,13 @@ export const BillsView: React.FC<BillsViewProps> = ({
     const workbook = XLSX.utils.book_new()
     const rows = filteredBills.map((b) => {
       const remaining = Math.max(0, b.netAmount - (b.paidAmount || (b.status === 'Fully Paid' ? b.netAmount : 0)))
-      return {
+      const rowObj: Record<string, unknown> = {
         'Bill ID': b.billId,
         'Created On': b.createdOn,
-        'Selected Period': b.selectedPeriod,
+        'Selected Period': formatBillingPeriod(b.selectedPeriod),
         Client: b.client,
         Project: b.project,
+        'Assigned To': b.assignedTo || 'Unassigned',
         'Total Sessions': b.totalSessions,
         'Total Minutes': b.totalMinutes,
         'Discount Minutes': b.discountMinutes,
@@ -230,54 +311,96 @@ export const BillsView: React.FC<BillsViewProps> = ({
         'Outstanding Balance (INR)': remaining,
         Notes: b.notes || '',
       }
+      return rowObj
     })
 
+    const sheetTitle = isMyInvoicesMode ? 'My Invoices' : isMyBillsMode ? 'My Bills' : 'Bills Register'
     const worksheet = XLSX.utils.json_to_sheet(rows)
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Bills Register')
-    XLSX.writeFile(workbook, `bills-register-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetTitle)
+    const filePrefix = isMyInvoicesMode ? 'my-invoices' : isMyBillsMode ? 'my-bills' : 'bills-register'
+    XLSX.writeFile(workbook, `${filePrefix}-${new Date().toISOString().slice(0, 10)}.xlsx`)
   }
 
-  if (!isAdmin) {
+  // Access guard: if non-admin attempts to view global 'all' register
+  if (!isAdmin && viewMode === 'all') {
     return (
       <div className="empty-state">
-        <strong>Access Restricted</strong>
-        <span>Bills and invoices are accessible exclusively to Administrator accounts.</span>
+        <Receipt size={36} color="#859288" />
+        <strong>Global Register Restricted</strong>
+        <span>
+          The global billing ledger is visible to administrators only. You can view your assigned records in{' '}
+          <b>My Bills</b> and <b>My Invoices</b>.
+        </span>
       </div>
     )
   }
 
   return (
     <div className="bills-view-container">
-      {/* Policy Notice: September 2026 Cutoff Rule */}
-      <div className="bills-policy-banner">
-        <div className="policy-badge">
-          <Sparkles size={14} color="#0f6b61" />
-          <span>Payment Settlement Policy</span>
+      {/* Policy Notice / Header Banner */}
+      {isMyInvoicesMode ? (
+        <div className="bills-policy-banner" style={{ borderLeftColor: '#0f6b61' }}>
+          <div className="policy-badge">
+            <CheckCircle2 size={14} color="#0f6b61" />
+            <span>My Invoices &amp; Receipts</span>
+          </div>
+          <p>
+            Official invoices and payment receipts for your account{' '}
+            <strong style={{ color: '#0f6b61' }}>
+              {currentUser?.fullName || currentUser?.name || currentUser?.username}
+            </strong>
+            . Invoices are generated for bills that are marked as <b>Half Paid</b> or <b>Fully Paid</b>. You can download and inspect your PDF invoices anytime.
+          </p>
         </div>
-        <p>
-          By default, all work earnings prior to <b>October 2026</b> (up to September 30, 2026) are counted as{' '}
-          <strong style={{ color: '#166534' }}>Settled / Paid</strong> in the workspace and dashboard. Starting from{' '}
-          <b>October 2026 onwards</b>, payment settlements, partial recoveries, and outstanding dues are dynamically tracked via this{' '}
-          <b>Bills</b> tab in Google Sheets.
-        </p>
-      </div>
+      ) : isMyBillsMode ? (
+        <div className="bills-policy-banner" style={{ borderLeftColor: '#0f6b61' }}>
+          <div className="policy-badge">
+            <UserCheck size={14} color="#0f6b61" />
+            <span>My Assigned Bills &amp; Statements</span>
+          </div>
+          <p>
+            Work challans and billing statements assigned specifically to your portal user account{' '}
+            <strong style={{ color: '#0f6b61' }}>
+              {currentUser?.fullName || currentUser?.name || currentUser?.username}
+            </strong>
+            . View itemized work sessions, applied time discounts, and download statements as PDF.
+          </p>
+        </div>
+      ) : (
+        <div className="bills-policy-banner">
+          <div className="policy-badge">
+            <Sparkles size={14} color="#0f6b61" />
+            <span>Payment Settlement Policy</span>
+          </div>
+          <p>
+            By default, all work earnings prior to <b>October 2026</b> (up to September 30, 2026) are counted as{' '}
+            <strong style={{ color: '#166534' }}>Settled / Paid</strong> in the workspace and dashboard. Starting from{' '}
+            <b>October 2026 onwards</b>, payment settlements, partial recoveries, and customer assignments are dynamically tracked via this{' '}
+            <b>Bills</b> tab in Google Sheets.
+          </p>
+        </div>
+      )}
 
       {/* KPI Tiles */}
       <div className="summary-grid bills-kpi-grid">
         <div className="summary-card highlight">
           <div className="card-top">
-            <span className="card-label">Total Billed Net</span>
+            <span className="card-label">
+              {isMyInvoicesMode ? 'Invoiced Net Total' : isMyBillsMode ? 'My Billed Net Total' : 'Total Billed Net'}
+            </span>
             <FileText size={16} color="#d4f0e4" />
           </div>
           <strong>{formatRupees(billMetrics.totalBilled)}</strong>
           <small style={{ color: '#c7e8dc' }}>
-            Across {filteredBills.length} recorded challan bills
+            Across {filteredBills.length} {isMyInvoicesMode ? 'invoices' : 'recorded bills'}
           </small>
         </div>
 
         <div className="summary-card">
           <div className="card-top">
-            <span className="card-label">Collected / Settled</span>
+            <span className="card-label">
+              {isMyInvoicesMode ? 'Amount Paid & Receipted' : 'Collected / Settled'}
+            </span>
             <span className="card-icon green">
               <CheckCircle2 size={16} />
             </span>
@@ -290,7 +413,9 @@ export const BillsView: React.FC<BillsViewProps> = ({
 
         <div className="summary-card">
           <div className="card-top">
-            <span className="card-label">Pending Receivables</span>
+            <span className="card-label">
+              {isMyInvoicesMode ? 'Remaining Balance Due' : 'Pending Receivables'}
+            </span>
             <span className="card-icon orange">
               <Clock size={16} />
             </span>
@@ -299,18 +424,22 @@ export const BillsView: React.FC<BillsViewProps> = ({
             {formatRupees(billMetrics.outstanding)}
           </strong>
           <small style={{ color: '#88948c' }}>
-            {billMetrics.unpaidCount} unpaid • {billMetrics.halfPaidCount} partial balance
+            {isMyInvoicesMode
+              ? `${billMetrics.halfPaidCount} partial invoices with balance`
+              : `${billMetrics.unpaidCount} unpaid • ${billMetrics.halfPaidCount} partial balance`}
           </small>
         </div>
 
         <div className="summary-card">
           <div className="card-top">
-            <span className="card-label">Bills Register</span>
+            <span className="card-label">
+              {isMyInvoicesMode ? 'Available Invoices' : isMyBillsMode ? 'My Bills Count' : 'Bills Register'}
+            </span>
             <span className="card-icon blue">
               <Layers size={16} />
             </span>
           </div>
-          <strong>{filteredBills.length} Bills</strong>
+          <strong>{filteredBills.length} {isMyInvoicesMode ? 'Invoices' : 'Bills'}</strong>
           <small style={{ color: '#88948c' }}>
             In connected tab: <b>Bills</b>
           </small>
@@ -320,46 +449,73 @@ export const BillsView: React.FC<BillsViewProps> = ({
       {/* Filter and Action Bar */}
       <div className="toolbar bills-toolbar">
         <div className="view-tabs">
-          <button
-            className={`view-tab-btn ${statusFilter === 'All' ? 'selected' : ''}`}
-            onClick={() => setStatusFilter('All')}
-          >
-            All Bills ({bills.length})
-          </button>
-          <button
-            className={`view-tab-btn ${statusFilter === 'Unpaid' ? 'selected' : ''}`}
-            onClick={() => setStatusFilter('Unpaid')}
-          >
-            Unpaid ({bills.filter((b) => b.status === 'Unpaid').length})
-          </button>
-          <button
-            className={`view-tab-btn ${statusFilter === 'Half Paid' ? 'selected' : ''}`}
-            onClick={() => setStatusFilter('Half Paid')}
-          >
-            Half Paid ({bills.filter((b) => b.status === 'Half Paid').length})
-          </button>
-          <button
-            className={`view-tab-btn ${statusFilter === 'Fully Paid' ? 'selected' : ''}`}
-            onClick={() => setStatusFilter('Fully Paid')}
-          >
-            Fully Paid ({bills.filter((b) => b.status === 'Fully Paid').length})
-          </button>
+          {isMyInvoicesMode ? (
+            <>
+              <button
+                className={`view-tab-btn ${statusFilter === 'All' ? 'selected' : ''}`}
+                onClick={() => setStatusFilter('All')}
+              >
+                All Invoices ({baseBills.length})
+              </button>
+              <button
+                className={`view-tab-btn ${statusFilter === 'Fully Paid' ? 'selected' : ''}`}
+                onClick={() => setStatusFilter('Fully Paid')}
+              >
+                Fully Paid ({baseBills.filter((b) => b.status === 'Fully Paid').length})
+              </button>
+              <button
+                className={`view-tab-btn ${statusFilter === 'Half Paid' ? 'selected' : ''}`}
+                onClick={() => setStatusFilter('Half Paid')}
+              >
+                Half Paid ({baseBills.filter((b) => b.status === 'Half Paid').length})
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className={`view-tab-btn ${statusFilter === 'All' ? 'selected' : ''}`}
+                onClick={() => setStatusFilter('All')}
+              >
+                All Bills ({baseBills.length})
+              </button>
+              <button
+                className={`view-tab-btn ${statusFilter === 'Unpaid' ? 'selected' : ''}`}
+                onClick={() => setStatusFilter('Unpaid')}
+              >
+                Unpaid ({baseBills.filter((b) => b.status === 'Unpaid').length})
+              </button>
+              <button
+                className={`view-tab-btn ${statusFilter === 'Half Paid' ? 'selected' : ''}`}
+                onClick={() => setStatusFilter('Half Paid')}
+              >
+                Half Paid ({baseBills.filter((b) => b.status === 'Half Paid').length})
+              </button>
+              <button
+                className={`view-tab-btn ${statusFilter === 'Fully Paid' ? 'selected' : ''}`}
+                onClick={() => setStatusFilter('Fully Paid')}
+              >
+                Fully Paid ({baseBills.filter((b) => b.status === 'Fully Paid').length})
+              </button>
+            </>
+          )}
         </div>
 
         <div className="toolbar-actions">
           {/* Client filter */}
-          <select
-            className="client-select"
-            value={selectedClient}
-            onChange={(e) => setSelectedClient(e.target.value)}
-          >
-            <option value="All clients">All Clients ({availableClients.length})</option>
-            {availableClients.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          {availableClients.length > 1 && (
+            <select
+              className="client-select"
+              value={selectedClient}
+              onChange={(e) => setSelectedClient(e.target.value)}
+            >
+              <option value="All clients">All Clients ({availableClients.length})</option>
+              {availableClients.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          )}
 
           {/* Search box */}
           <div className="search-box">
@@ -381,7 +537,7 @@ export const BillsView: React.FC<BillsViewProps> = ({
             <button
               type="button"
               className="secondary-btn"
-              title="Click or hover to export bills register"
+              title="Click or hover to export register"
               onClick={() => setShowExportMenu((prev) => !prev)}
             >
               <Download size={14} /> Export Register
@@ -419,33 +575,55 @@ export const BillsView: React.FC<BillsViewProps> = ({
             <span className="btn-text-responsive">{isSyncing ? 'Syncing...' : 'Sync Bills'}</span>
           </button>
 
-          {/* Create New Challan / Bill Trigger */}
-          <button
-            className="primary-btn"
-            onClick={onOpenCreateChallan}
-            title="Create a new Challan & sync to Bills tab"
-          >
-            <Plus size={15} /> <span className="btn-text-responsive">Create Challan</span>
-          </button>
+          {/* Create New Challan / Bill Trigger (Admin Only) */}
+          {isAdmin && onOpenCreateChallan && (
+            <button
+              className="primary-btn"
+              onClick={onOpenCreateChallan}
+              title="Create a new Challan & sync to Bills tab"
+            >
+              <Plus size={15} /> <span className="btn-text-responsive">Create Challan</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Bills Table */}
+      {/* Bills / Invoices Table */}
       <div className="ledger-section" style={{ marginTop: '16px' }}>
         <div className="table-wrap ledger-table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Bill ID</th>
-                <th>Created On</th>
-                <th>Period Scope</th>
-                <th>Client / Project</th>
-                <th>Sessions &amp; Duration</th>
-                <th style={{ textAlign: 'right' }}>Net Bill Amount</th>
-                <th>Status</th>
-                <th>Paid Amount</th>
-                <th>Paid Date</th>
-                <th style={{ textAlign: 'center' }}>Actions</th>
+                {isMyInvoicesMode ? (
+                  <>
+                    <th>Invoice ID</th>
+                    <th>Ref Bill ID</th>
+                    <th>Payment Date</th>
+                    <th>Period Scope</th>
+                    <th>Client / Project</th>
+                    {isAdmin && <th>Assigned To</th>}
+                    <th>Duration</th>
+                    <th style={{ textAlign: 'right' }}>Invoiced Amount</th>
+                    <th>Status</th>
+                    <th>Paid Amount</th>
+                    <th>Balance Due</th>
+                    <th style={{ textAlign: 'center' }}>Actions</th>
+                  </>
+                ) : (
+                  <>
+                    <th>Bill ID</th>
+                    <th>Created On</th>
+                    <th>Period Scope</th>
+                    <th>Client / Project</th>
+                    {isAdmin && <th>Assigned To</th>}
+                    <th>Sessions &amp; Duration</th>
+                    <th style={{ textAlign: 'right' }}>Net Bill Amount</th>
+                    <th>Status</th>
+                    <th>Paid Amount</th>
+                    <th>Paid Date</th>
+                    <th style={{ textAlign: 'center' }}>Actions</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -453,7 +631,131 @@ export const BillsView: React.FC<BillsViewProps> = ({
                 const isFullyPaid = bill.status === 'Fully Paid'
                 const isHalfPaid = bill.status === 'Half Paid'
                 const isUnpaid = bill.status === 'Unpaid'
+                const canDownloadInvoice = isFullyPaid || isHalfPaid
+                const remaining = Math.max(0, bill.netAmount - (bill.paidAmount || (isFullyPaid ? bill.netAmount : 0)))
 
+                if (isMyInvoicesMode) {
+                  return (
+                    <tr
+                      key={bill.billId}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => setSelectedBillForInvoiceModal(bill)}
+                    >
+                      <td>
+                        <span
+                          className="bill-id-badge"
+                          style={{ background: '#ecfdf5', color: '#0f6b61', borderColor: '#a7f3d0' }}
+                        >
+                          INV-{bill.billId.replace('BILL-', '')}
+                        </span>
+                      </td>
+                      <td>
+                        <span style={{ fontSize: '11px', color: '#4b5563', fontFamily: 'monospace', fontWeight: 600 }}>
+                          {bill.billId}
+                        </span>
+                      </td>
+                      <td>
+                        <small style={{ color: '#445148', fontWeight: 500 }}>{bill.paidOn || bill.createdOn}</small>
+                      </td>
+                      <td>
+                        <strong>{formatBillingPeriod(bill.selectedPeriod)}</strong>
+                      </td>
+                      <td>
+                        <strong>{bill.client}</strong>
+                        <small>{bill.project}</small>
+                      </td>
+                      {isAdmin && (
+                        <td>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              color: bill.assignedTo ? '#0f6b61' : '#88948c',
+                              background: bill.assignedTo ? '#f0fdf4' : '#f5f7f5',
+                              padding: '3px 7px',
+                              borderRadius: '4px',
+                              display: 'inline-block',
+                            }}
+                          >
+                            {bill.assignedTo || 'Unassigned'}
+                          </span>
+                        </td>
+                      )}
+                      <td>
+                        <span>{formatMinutes(bill.effectiveMinutes)}</span>
+                        <small style={{ color: '#88948c' }}>{bill.totalSessions} sessions</small>
+                      </td>
+                      <td className="amount-cell" style={{ textAlign: 'right' }}>
+                        {formatRupees(bill.netAmount)}
+                      </td>
+                      <td>
+                        <span
+                          className={`bill-status-pill ${
+                            isFullyPaid ? 'fully-paid' : isHalfPaid ? 'half-paid' : 'unpaid'
+                          }`}
+                        >
+                          {isFullyPaid && <CheckCircle2 size={12} />}
+                          {isHalfPaid && <AlertTriangle size={12} />}
+                          {isUnpaid && <Clock size={12} />}
+                          {bill.status}
+                        </span>
+                      </td>
+                      <td>
+                        <strong style={{ color: isFullyPaid ? '#166534' : '#b45309' }}>
+                          {formatRupees(bill.paidAmount || (isFullyPaid ? bill.netAmount : 0))}
+                        </strong>
+                      </td>
+                      <td>
+                        {remaining > 0 ? (
+                          <span style={{ color: '#c2410c', fontWeight: 600 }}>
+                            {formatRupees(remaining)}
+                          </span>
+                        ) : (
+                          <span style={{ color: '#166534', fontSize: '11px', fontWeight: 600 }}>Settled</span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                          {/* Invoice PDF download */}
+                          <button
+                            className="table-action-btn"
+                            title={isHalfPaid ? 'Download Partial Payment Invoice (PDF)' : 'Download Paid in Full Invoice (PDF)'}
+                            onClick={() => generateInvoicePdf(bill)}
+                            style={{
+                              borderColor: isHalfPaid ? '#d97706' : '#0f6b61',
+                              color: isHalfPaid ? '#b45309' : '#0f6b61',
+                            }}
+                          >
+                            <Download size={13} />
+                            <span>Invoice</span>
+                          </button>
+
+                          {/* View Invoice Modal */}
+                          <button
+                            className="table-action-btn"
+                            title="View Official Invoice Details"
+                            onClick={() => setSelectedBillForInvoiceModal(bill)}
+                          >
+                            <Receipt size={13} />
+                            <span>View</span>
+                          </button>
+
+                          {/* View Reference Bill Statement */}
+                          <button
+                            className="table-action-btn"
+                            title="View Reference Bill Statement"
+                            onClick={() => setSelectedBillForModal(bill)}
+                          >
+                            <FileText size={13} />
+                            <span>Ref Bill</span>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                }
+
+                // Regular Bill / My Bills row:
                 return (
                   <tr
                     key={bill.billId}
@@ -461,18 +763,37 @@ export const BillsView: React.FC<BillsViewProps> = ({
                     onClick={() => setSelectedBillForModal(bill)}
                   >
                     <td>
-                      <span className="bill-id-badge">{bill.billId}</span>
+                      <span className="bill-id-badge">
+                        {bill.billId}
+                      </span>
                     </td>
                     <td>
                       <small style={{ color: '#445148', fontWeight: 500 }}>{bill.createdOn}</small>
                     </td>
                     <td>
-                      <strong>{bill.selectedPeriod}</strong>
+                      <strong>{formatBillingPeriod(bill.selectedPeriod)}</strong>
                     </td>
                     <td>
                       <strong>{bill.client}</strong>
                       <small>{bill.project}</small>
                     </td>
+                    {isAdmin && (
+                      <td>
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            color: bill.assignedTo ? '#0f6b61' : '#88948c',
+                            background: bill.assignedTo ? '#f0fdf4' : '#f5f7f5',
+                            padding: '3px 7px',
+                            borderRadius: '4px',
+                            display: 'inline-block',
+                          }}
+                        >
+                          {bill.assignedTo || 'Unassigned'}
+                        </span>
+                      </td>
+                    )}
                     <td>
                       <span>{formatMinutes(bill.effectiveMinutes)}</span>
                       <small style={{ color: '#88948c' }}>{bill.totalSessions} sessions</small>
@@ -513,14 +834,45 @@ export const BillsView: React.FC<BillsViewProps> = ({
                     </td>
                     <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                        {/* Direct Bill Statement PDF download */}
                         <button
                           className="table-action-btn"
-                          title="Open Bill Inspection Form & Update Status"
+                          title="Download Bill Statement PDF"
+                          onClick={() => generateBillStatementPdf(bill)}
+                          style={{
+                            borderColor: '#0f6b61',
+                            color: '#0f6b61',
+                          }}
+                        >
+                          <Download size={13} />
+                          <span>Bill</span>
+                        </button>
+
+                        {/* Inspection / Statement Form Button */}
+                        <button
+                          className="table-action-btn"
+                          title={isAdmin ? 'Open Bill Inspection Form & Update Status' : 'View Bill Statement Details'}
                           onClick={() => setSelectedBillForModal(bill)}
                         >
                           <FileText size={13} />
-                          <span>Form</span>
+                          <span>{isAdmin ? 'Form' : 'View'}</span>
                         </button>
+
+                        {/* Direct Invoice access if paid / half paid */}
+                        {canDownloadInvoice && (
+                          <button
+                            className="table-action-btn"
+                            title="View Official Payment Invoice"
+                            onClick={() => setSelectedBillForInvoiceModal(bill)}
+                            style={{
+                              borderColor: isHalfPaid ? '#d97706' : '#0f6b61',
+                              color: isHalfPaid ? '#b45309' : '#0f6b61',
+                            }}
+                          >
+                            <Receipt size={13} />
+                            <span>Invoice</span>
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -532,13 +884,23 @@ export const BillsView: React.FC<BillsViewProps> = ({
           {filteredBills.length === 0 && (
             <div className="empty-state">
               <FileText size={36} color="#859288" />
-              <strong>No Bills Found</strong>
+              <strong>
+                {isMyInvoicesMode
+                  ? 'No Invoices Available Yet'
+                  : isMyBillsMode
+                  ? 'No Bills Assigned'
+                  : 'No Bills Found'}
+              </strong>
               <span>
-                {bills.length === 0
-                  ? 'No bills have been generated yet. Open "Generate Challan" and click "Sync & Download PDF" to record your first bill in Google Sheets.'
+                {isMyInvoicesMode
+                  ? 'Invoices become available once payment is recorded by the admin as Half Paid or Fully Paid. Any pending bills can be reviewed under "My Bills".'
+                  : isMyBillsMode
+                  ? `There are currently no bills assigned to your user account (${currentUser?.fullName || currentUser?.username}). Contact your administrator if you need a statement.`
+                  : bills.length === 0
+                  ? 'No bills have been generated yet. Open "Create Challan" and click "Sync & Download PDF" to record your first bill in Google Sheets.'
                   : 'No bills match your current filter criteria.'}
               </span>
-              {bills.length === 0 && (
+              {isAdmin && bills.length === 0 && onOpenCreateChallan && (
                 <button
                   className="primary-btn"
                   style={{ marginTop: '14px' }}
@@ -553,7 +915,7 @@ export const BillsView: React.FC<BillsViewProps> = ({
 
         <div className="table-footer">
           <span>
-            Showing {filteredBills.length} of {bills.length} bills in sheet tab &quot;Bills&quot;
+            Showing {filteredBills.length} of {baseBills.length} {isMyInvoicesMode ? 'invoices' : 'bills'} in sheet tab &quot;Bills&quot;
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <span
@@ -573,14 +935,40 @@ export const BillsView: React.FC<BillsViewProps> = ({
       {selectedBillForModal && (
         <BillDetailModal
           bill={selectedBillForModal}
+          isCustomerView={isCustomer}
           onClose={() => setSelectedBillForModal(null)}
-          onSaveBill={async (updated) => {
-            const ok = await onUpdateBill(updated)
-            if (ok) {
-              // Update local modal view state as well
-              setSelectedBillForModal(updated)
-            }
-            return ok
+          onOpenInvoice={
+            selectedBillForModal.status === 'Half Paid' || selectedBillForModal.status === 'Fully Paid'
+              ? () => {
+                  const b = selectedBillForModal
+                  setSelectedBillForModal(null)
+                  setSelectedBillForInvoiceModal(b)
+                }
+              : undefined
+          }
+          onSaveBill={
+            isAdmin && onUpdateBill
+              ? async (updated) => {
+                  const ok = await onUpdateBill(updated)
+                  if (ok) {
+                    setSelectedBillForModal(updated)
+                  }
+                  return ok
+                }
+              : undefined
+          }
+        />
+      )}
+
+      {/* Invoice Detail Modal */}
+      {selectedBillForInvoiceModal && (
+        <InvoiceDetailModal
+          bill={selectedBillForInvoiceModal}
+          onClose={() => setSelectedBillForInvoiceModal(null)}
+          onOpenBillStatement={() => {
+            const b = selectedBillForInvoiceModal
+            setSelectedBillForInvoiceModal(null)
+            setSelectedBillForModal(b)
           }}
         />
       )}

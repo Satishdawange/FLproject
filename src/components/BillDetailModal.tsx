@@ -1,33 +1,141 @@
 import React, { useState } from 'react'
 import {
   X,
-  FileText,
   Download,
   Lock,
   Save,
   Sparkles,
   AlertCircle,
+  Receipt,
+  ExternalLink,
+  ShieldCheck,
 } from 'lucide-react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import type { BillItem, BillPaymentStatus } from '../types'
-import { formatMinutes, formatRupees } from '../utils/calculations'
+import { formatMinutes, formatRupees, formatBillingPeriod } from '../utils/calculations'
+import { generateInvoicePdf } from './InvoiceDetailModal'
 
 interface BillDetailModalProps {
   bill: BillItem
+  isCustomerView?: boolean
   onClose: () => void
-  onSaveBill: (updatedBill: BillItem) => Promise<boolean>
+  onSaveBill?: (updatedBill: BillItem) => Promise<boolean>
+  onOpenInvoice?: () => void
+}
+
+/**
+ * Generates and downloads official Bill Statement PDF
+ */
+export function generateBillStatementPdf(bill: BillItem) {
+  const doc = new jsPDF()
+
+  // Header banner (210mm wide)
+  doc.setFillColor(15, 107, 97)
+  doc.rect(0, 0, 210, 28, 'F')
+  doc.setTextColor(255, 255, 255)
+  doc.setFontSize(13)
+  doc.setFont('helvetica', 'bold')
+  doc.text('SATISH SERVICENOW SUPPORT', 14, 13, { maxWidth: 110 })
+
+  doc.setFontSize(9)
+  doc.setFont('helvetica', 'normal')
+  doc.text('WORK CHALLAN BILL STATEMENT', 14, 20, { maxWidth: 110 })
+
+  doc.setFontSize(8.5)
+  doc.text(`Bill ID: ${bill.billId}`, 196, 14, { align: 'right' })
+  doc.text(`Created: ${bill.createdOn}`, 196, 20, { align: 'right' })
+
+  // Bill Details (2 columns: left x=14 maxWidth 90, right x=112 maxWidth 84)
+  doc.setTextColor(30, 40, 35)
+  doc.setFontSize(9)
+  doc.setFont('helvetica', 'bold')
+  doc.text('CLIENT NAME:', 14, 38)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8.5)
+  doc.text(bill.client, 14, 44, { maxWidth: 90 })
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(9)
+  doc.text('BILLING PERIOD:', 112, 38)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8.5)
+  doc.text(formatBillingPeriod(bill.selectedPeriod), 112, 44, { maxWidth: 84 })
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(9)
+  doc.text('PROJECT(S):', 14, 52)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8.5)
+  doc.text(bill.project, 14, 58, { maxWidth: 90 })
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(9)
+  doc.text(bill.assignedTo ? 'CUSTOMER ACCOUNT:' : 'DATE GENERATED:', 112, 52)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8.5)
+  doc.text(bill.assignedTo || bill.createdOn, 112, 58, { maxWidth: 84 })
+
+  // Statement Table (Total width: 182mm from 14 to 196)
+  autoTable(doc, {
+    startY: 68,
+    margin: { left: 14, right: 14 },
+    head: [['Dimension / Item', 'Details / Values', 'Metric']],
+    body: [
+      ['Total Work Sessions', `${bill.totalSessions} sessions logged`, 'Volume'],
+      ['Total Work Duration', formatMinutes(bill.totalMinutes), 'Time'],
+      ['Time Discounts Deducted', bill.discountMinutes > 0 ? `-${formatMinutes(bill.discountMinutes)}` : '0m', 'Deduction'],
+      ['Effective Billable Time', formatMinutes(bill.effectiveMinutes), 'Effective'],
+      ['Gross Amount (Pre-Discount)', `Rs. ${Math.round(bill.grossAmount).toLocaleString('en-IN')}`, 'Financial'],
+      ['Discount Amount Deducted', `-Rs. ${Math.round(bill.discountMoney).toLocaleString('en-IN')}`, 'Financial'],
+      ['Net Amount Payable', `Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`, 'Final Due'],
+      ['Current Payment Status', bill.status, 'Status'],
+      ['Paid Amount to Date', `Rs. ${Math.round(bill.paidAmount || 0).toLocaleString('en-IN')}`, 'Collections'],
+      ['Payment Date', bill.paidOn || 'Pending', 'Date'],
+      ['Assigned Customer', bill.assignedTo || 'Unassigned', 'Account'],
+    ],
+    headStyles: { fillColor: [15, 107, 97], fontSize: 8.5, fontStyle: 'bold' },
+    styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak' },
+    columnStyles: {
+      0: { cellWidth: 70 },
+      1: { cellWidth: 82 },
+      2: { cellWidth: 30, halign: 'right' },
+    },
+  })
+
+  const finalY = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 160
+
+  // Summary box (width 82mm, from 114 to 196mm)
+  doc.setFillColor(242, 247, 244)
+  doc.roundedRect(114, finalY + 8, 82, 34, 2, 2, 'F')
+  doc.setTextColor(15, 107, 97)
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10.5)
+  doc.text('Total Net Payable:', 118, finalY + 17, { maxWidth: 45 })
+  doc.text(`Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`, 192, finalY + 17, { align: 'right' })
+
+  doc.setFontSize(8.5)
+  doc.setTextColor(50, 60, 55)
+  doc.text(`Status: ${bill.status}`, 118, finalY + 24, { maxWidth: 74 })
+  if (bill.paidOn) {
+    doc.text(`Paid On: ${bill.paidOn}`, 118, finalY + 31, { maxWidth: 74 })
+  }
+
+  doc.save(`bill-statement-${bill.billId}.pdf`)
 }
 
 export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   bill,
+  isCustomerView = false,
   onClose,
   onSaveBill,
+  onOpenInvoice,
 }) => {
   const todayIso = new Date().toISOString().slice(0, 10)
 
   // A bill that was loaded from the sheet as "Fully Paid" is locked and cannot be edited
   const isSettledLocked = bill.status === 'Fully Paid'
+  const isEditable = !isSettledLocked && !isCustomerView && Boolean(onSaveBill)
 
   const [status, setStatus] = useState<BillPaymentStatus>(bill.status)
   const [paidAmount, setPaidAmount] = useState<number>(bill.paidAmount || 0)
@@ -36,18 +144,18 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   const [saving, setSaving] = useState(false)
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; error?: boolean } | null>(null)
 
+  const hasInvoice = status === 'Half Paid' || status === 'Fully Paid'
+  const invoiceNo = `INV-${bill.billId.replace('BILL-', '')}`
+
   // Handle status change
   const handleStatusChange = (newStatus: BillPaymentStatus) => {
-    if (isSettledLocked) return
+    if (!isEditable) return
     setStatus(newStatus)
 
     if (newStatus === 'Fully Paid') {
-      // Auto-set paid amount to full net amount
       setPaidAmount(bill.netAmount)
-      // Recent fully paid date overrides previous half-paid date
       setPaidOn(todayIso)
     } else if (newStatus === 'Half Paid') {
-      // If paid amount was full or 0, default to half
       if (paidAmount === 0 || paidAmount >= bill.netAmount) {
         setPaidAmount(Math.round(bill.netAmount / 2))
       }
@@ -62,7 +170,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
 
   // Handle Save to Google Sheets
   const handleSave = async () => {
-    if (isSettledLocked) return
+    if (!isEditable || !onSaveBill) return
 
     if (status === 'Half Paid') {
       if (!paidAmount || paidAmount <= 0) {
@@ -104,270 +212,122 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
     }
   }
 
-  // Generate & Download PDF Bill Statement
-  const handleExportStatementPdf = () => {
-    const doc = new jsPDF()
-
-    // Header banner
-    doc.setFillColor(15, 107, 97)
-    doc.rect(0, 0, 210, 28, 'F')
-    doc.setTextColor(255, 255, 255)
-    doc.setFontSize(16)
-    doc.setFont('helvetica', 'bold')
-    doc.text('SATISH SERVICENOW SUPPORT - BILL STATEMENT', 14, 18)
-
-    doc.setFontSize(9)
-    doc.setFont('helvetica', 'normal')
-    doc.text(`Bill ID: ${bill.billId}`, 196, 18, { align: 'right' })
-
-    // Bill Details
-    doc.setTextColor(30, 40, 35)
-    doc.setFontSize(10)
-    doc.setFont('helvetica', 'bold')
-    doc.text('CLIENT NAME:', 14, 40)
-    doc.setFont('helvetica', 'normal')
-    doc.text(bill.client, 14, 46)
-
-    doc.setFont('helvetica', 'bold')
-    doc.text('BILLING PERIOD:', 120, 40)
-    doc.setFont('helvetica', 'normal')
-    doc.text(bill.selectedPeriod, 120, 46)
-
-    doc.setFont('helvetica', 'bold')
-    doc.text('PROJECT(S):', 14, 54)
-    doc.setFont('helvetica', 'normal')
-    doc.text(bill.project, 14, 60)
-
-    doc.setFont('helvetica', 'bold')
-    doc.text('DATE GENERATED:', 120, 54)
-    doc.setFont('helvetica', 'normal')
-    doc.text(bill.createdOn, 120, 60)
-
-    // Statement Table
-    autoTable(doc, {
-      startY: 68,
-      head: [['Dimension / Item', 'Details / Values', 'Metric']],
-      body: [
-        ['Total Work Sessions', `${bill.totalSessions} sessions logged`, 'Volume'],
-        ['Total Work Duration', formatMinutes(bill.totalMinutes), 'Time'],
-        ['Time Discounts Deducted', bill.discountMinutes > 0 ? `-${formatMinutes(bill.discountMinutes)}` : '0m', 'Deduction'],
-        ['Effective Billable Time', formatMinutes(bill.effectiveMinutes), 'Effective'],
-        ['Gross Amount (Pre-Discount)', `Rs. ${Math.round(bill.grossAmount).toLocaleString('en-IN')}`, 'Financial'],
-        ['Discount Amount Deducted', `-Rs. ${Math.round(bill.discountMoney).toLocaleString('en-IN')}`, 'Financial'],
-        ['Net Amount Payable', `Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`, 'Final Due'],
-        ['Current Payment Status', bill.status, 'Status'],
-        ['Paid Amount to Date', `Rs. ${Math.round(bill.paidAmount || 0).toLocaleString('en-IN')}`, 'Collections'],
-        ['Payment Date', bill.paidOn || 'Pending', 'Date'],
-      ],
-      headStyles: { fillColor: [15, 107, 97], fontSize: 9, fontStyle: 'bold' },
-      styles: { fontSize: 8.5, cellPadding: 3.5 },
-    })
-
-    const finalY = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 160
-
-    doc.setFillColor(242, 247, 244)
-    doc.roundedRect(120, finalY + 8, 76, 32, 2, 2, 'F')
-    doc.setTextColor(15, 107, 97)
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(11)
-    doc.text('Total Net Payable:', 124, finalY + 18)
-    doc.text(`Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`, 192, finalY + 18, { align: 'right' })
-
-    doc.setFontSize(9)
-    doc.setTextColor(50, 60, 55)
-    doc.text(`Status: ${bill.status}`, 124, finalY + 26)
-    if (bill.paidOn) {
-      doc.text(`Paid On: ${bill.paidOn}`, 124, finalY + 34)
-    }
-
-    doc.save(`bill-${bill.billId}.pdf`)
-  }
-
-  // Generate & Download Official Payment Invoice PDF (for Half Paid / Fully Paid)
-  const handleExportInvoicePdf = () => {
-    if (status !== 'Half Paid' && status !== 'Fully Paid') return
-
-    const doc = new jsPDF()
-    const isHalfPaid = status === 'Half Paid'
-    const actualPaid = isHalfPaid ? paidAmount : bill.netAmount
-    const remainingBalance = Math.max(0, bill.netAmount - actualPaid)
-
-    // Header color: Amber for Half Paid, Emerald for Fully Paid
-    const headerColor: [number, number, number] = isHalfPaid ? [217, 119, 6] : [15, 107, 97]
-
-    doc.setFillColor(headerColor[0], headerColor[1], headerColor[2])
-    doc.rect(0, 0, 210, 30, 'F')
-
-    doc.setTextColor(255, 255, 255)
-    doc.setFontSize(16)
-    doc.setFont('helvetica', 'bold')
-    doc.text(
-      isHalfPaid ? 'PARTIAL PAYMENT INVOICE (HALF PAID)' : 'OFFICIAL PAYMENT INVOICE (PAID IN FULL)',
-      14,
-      18
-    )
-
-    doc.setFontSize(9)
-    doc.setFont('helvetica', 'normal')
-    doc.text(`Invoice No: INV-${bill.billId.replace('BILL-', '')}`, 196, 14, { align: 'right' })
-    doc.text(`Date: ${paidOn || todayIso}`, 196, 22, { align: 'right' })
-
-    // Prominent Status Banner (Multi-line layout with clean ASCII formatting)
-    if (isHalfPaid) {
-      doc.setFillColor(254, 243, 199) // Light amber
-      doc.roundedRect(14, 35, 182, 16, 2, 2, 'F')
-      
-      // Top line
-      doc.setTextColor(180, 83, 9)
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(9.5)
-      doc.text('[PARTIAL PAYMENT RECEIVED]', 18, 42)
-
-      doc.setTextColor(194, 65, 12)
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(9.5)
-      doc.text(`REMAINING BALANCE DUE: Rs. ${Math.round(remainingBalance).toLocaleString('en-IN')}`, 192, 42, { align: 'right' })
-
-      // Bottom line
-      doc.setTextColor(120, 60, 10)
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(8)
-      doc.text(`Amount Received: Rs. ${Math.round(actualPaid).toLocaleString('en-IN')} of Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`, 18, 47.5)
-      doc.text(`Payment Recorded: ${paidOn || todayIso}`, 192, 47.5, { align: 'right' })
-    } else {
-      doc.setFillColor(220, 252, 231) // Light green
-      doc.roundedRect(14, 35, 182, 16, 2, 2, 'F')
-
-      // Top line
-      doc.setTextColor(22, 101, 52)
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(9.5)
-      doc.text('[PAYMENT SETTLED IN FULL]', 18, 42)
-
-      doc.text('OUTSTANDING BALANCE: Rs. 0', 192, 42, { align: 'right' })
-
-      // Bottom line
-      doc.setTextColor(30, 80, 45)
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(8)
-      doc.text(`Full Amount Paid: Rs. ${Math.round(actualPaid).toLocaleString('en-IN')}`, 18, 47.5)
-      doc.text(`Settled On: ${paidOn || todayIso}`, 192, 47.5, { align: 'right' })
-    }
-
-    // Bill To details
-    doc.setTextColor(30, 40, 35)
-    doc.setFontSize(10)
-    doc.setFont('helvetica', 'bold')
-    doc.text('BILLED TO:', 14, 60)
-    doc.setFont('helvetica', 'normal')
-    doc.text(bill.client, 14, 66)
-
-    doc.setFont('helvetica', 'bold')
-    doc.text('SERVICE SCOPE:', 120, 60)
-    doc.setFont('helvetica', 'normal')
-    doc.text(bill.selectedPeriod, 120, 66)
-
-    doc.setFont('helvetica', 'bold')
-    doc.text('PROJECT:', 14, 76)
-    doc.setFont('helvetica', 'normal')
-    doc.text(bill.project, 14, 82)
-
-    doc.setFont('helvetica', 'bold')
-    doc.text('PAYMENT DATE:', 120, 76)
-    doc.setFont('helvetica', 'normal')
-    doc.text(paidOn || todayIso, 120, 82)
-
-    // Invoice Breakdown Table
-    autoTable(doc, {
-      startY: 92,
-      head: [['Description', 'Scope / Hours', 'Gross', 'Discount', 'Net Amount (INR)']],
-      body: [
-        [
-          `ServiceNow Support Services - ${bill.selectedPeriod}\nProjects: ${bill.project}\nTotal sessions: ${bill.totalSessions}`,
-          `${formatMinutes(bill.effectiveMinutes)} billable time\n(${formatMinutes(bill.totalMinutes)} gross)`,
-          `Rs. ${Math.round(bill.grossAmount).toLocaleString('en-IN')}`,
-          `-Rs. ${Math.round(bill.discountMoney).toLocaleString('en-IN')}`,
-          `Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`,
-        ],
-      ],
-      headStyles: { fillColor: headerColor, fontSize: 8.5, fontStyle: 'bold' },
-      styles: { fontSize: 8, cellPadding: 4 },
-      columnStyles: { 4: { halign: 'right', fontStyle: 'bold' } },
-    })
-
-    const finalY = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY || 140
-
-    // Payment Summary Card
-    doc.setFillColor(245, 248, 245)
-    doc.roundedRect(110, finalY + 8, 86, 46, 2, 2, 'F')
-
-    doc.setTextColor(50, 60, 55)
-    doc.setFontSize(9)
-    doc.text('Total Invoiced Amount:', 115, finalY + 16)
-    doc.text(`Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`, 192, finalY + 16, { align: 'right' })
-
-    doc.setTextColor(isHalfPaid ? 180 : 15, isHalfPaid ? 83 : 107, isHalfPaid ? 9 : 97)
-    doc.setFont('helvetica', 'bold')
-    doc.text('Amount Received / Paid:', 115, finalY + 24)
-    doc.text(`Rs. ${Math.round(actualPaid).toLocaleString('en-IN')}`, 192, finalY + 24, { align: 'right' })
-
-    doc.setDrawColor(200, 215, 205)
-    doc.line(115, finalY + 28, 192, finalY + 28)
-
-    doc.setFontSize(10.5)
-    if (isHalfPaid) {
-      doc.setTextColor(194, 65, 12)
-      doc.text('Balance Due:', 115, finalY + 36)
-      doc.text(`Rs. ${Math.round(remainingBalance).toLocaleString('en-IN')}`, 192, finalY + 36, { align: 'right' })
-      doc.setFontSize(8)
-      doc.text(`Status: PARTIAL PAYMENT (HALF PAID)`, 115, finalY + 44)
-    } else {
-      doc.setTextColor(15, 107, 97)
-      doc.text('Balance Remaining:', 115, finalY + 36)
-      doc.text('Rs. 0.00', 192, finalY + 36, { align: 'right' })
-      doc.setFontSize(8)
-      doc.text(`Status: PAID IN FULL`, 115, finalY + 44)
-    }
-
-    doc.save(`invoice-${isHalfPaid ? 'half-paid-' : 'paid-'}${bill.billId}.pdf`)
-  }
-
   const remainingCalc = Math.max(0, bill.netAmount - (status === 'Fully Paid' ? bill.netAmount : paidAmount))
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
         className="modal bill-detail-modal"
-        style={{ maxWidth: '680px', width: '95%' }}
+        style={{ maxWidth: '720px', width: '95%' }}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        {/* MODAL HEADER */}
         <div className="modal-header">
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-              <span className="badge-pill active" style={{ fontSize: '11px', textTransform: 'uppercase' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+              <span className="badge-pill active" style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 {bill.billId}
               </span>
               <span className={`status-pill ${status.toLowerCase().replace(' ', '-')}`}>
                 {status}
               </span>
+              {hasInvoice && (
+                <span
+                  className="badge-pill"
+                  style={{
+                    background: '#e0f2fe',
+                    color: '#0369a1',
+                    borderColor: '#bae6fd',
+                    cursor: onOpenInvoice ? 'pointer' : 'default',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                  }}
+                  onClick={onOpenInvoice}
+                  title="Click to view formal invoice document"
+                >
+                  <Receipt size={11} /> {invoiceNo}
+                  {onOpenInvoice && <ExternalLink size={10} />}
+                </span>
+              )}
               {isSettledLocked && (
                 <span className="badge-pill default" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                   <Lock size={11} /> Settled &amp; Locked
                 </span>
               )}
             </div>
-            <h2>Bill &amp; Payment Statement Form</h2>
+            <h2>Work Challan &amp; Bill Statement</h2>
           </div>
-          <button className="icon-btn" onClick={onClose}>
+          <button className="icon-btn" onClick={onClose} title="Close statement">
             <X size={18} />
           </button>
         </div>
 
+        {/* MODAL SCROLL BODY */}
         <div className="modal-scroll-body" style={{ maxHeight: '72vh', overflowY: 'auto', padding: '18px 24px' }}>
           {feedbackMsg && (
             <div className={`alert-box ${feedbackMsg.error ? 'error' : 'success'}`} style={{ marginBottom: '16px' }}>
               {feedbackMsg.error ? <AlertCircle size={15} /> : <Sparkles size={15} />}
               <span>{feedbackMsg.text}</span>
+            </div>
+          )}
+
+          {/* LINKED INVOICE BANNER */}
+          {hasInvoice && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                padding: '12px 16px',
+                background: '#f0fdf4',
+                border: '1px solid #bbf7d0',
+                borderRadius: '8px',
+                marginBottom: '16px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Receipt size={20} color="#0f6b61" />
+                <div>
+                  <strong style={{ fontSize: '13px', color: '#166534', display: 'block' }}>
+                    Official Payment Invoice Generated ({invoiceNo})
+                  </strong>
+                  <span style={{ fontSize: '12px', color: '#3f6212' }}>
+                    Recorded on {bill.paidOn || todayIso} • {status === 'Half Paid' ? 'Partial Payment Balance Active' : 'Paid in Full'}
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {onOpenInvoice && (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={onOpenInvoice}
+                    style={{ fontSize: '12px', padding: '5px 10px', height: '30px' }}
+                  >
+                    <ExternalLink size={12} /> Open Invoice View
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => generateInvoicePdf(bill)}
+                  style={{
+                    fontSize: '12px',
+                    padding: '5px 10px',
+                    height: '30px',
+                    borderColor: '#0f6b61',
+                    color: '#0f6b61',
+                  }}
+                >
+                  <Download size={12} /> Invoice PDF
+                </button>
+              </div>
             </div>
           )}
 
@@ -388,18 +348,18 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
             </div>
 
             <div className="bill-kpi-tile">
-              <span className="kpi-caption">Client &amp; Period</span>
+              <span className="kpi-caption">Client &amp; Scope</span>
               <strong style={{ fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {bill.client}
               </strong>
-              <small>{bill.selectedPeriod}</small>
+              <small>{formatBillingPeriod(bill.selectedPeriod)}</small>
             </div>
           </div>
 
           {/* READ ONLY BILL DETAILS SECTION */}
           <div className="bill-section-card">
-            <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: '#1a2a20', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Challan &amp; Project Specifications (Read-Only)
+            <h4 style={{ margin: '0 0 12px', fontSize: '12.5px', color: '#1a2a20', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Itemized Challan &amp; Project Specifications
             </h4>
 
             <div className="bill-specs-grid">
@@ -420,8 +380,8 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 <input type="text" readOnly value={bill.project} className="readonly-input" />
               </div>
               <div className="spec-field">
-                <label>Billing Period</label>
-                <input type="text" readOnly value={bill.selectedPeriod} className="readonly-input" />
+                <label>Billing Period Scope</label>
+                <input type="text" readOnly value={formatBillingPeriod(bill.selectedPeriod)} className="readonly-input" />
               </div>
               <div className="spec-field">
                 <label>Discount Deducted</label>
@@ -432,20 +392,47 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                   className="readonly-input"
                 />
               </div>
+              <div className="spec-field">
+                <label>Assigned Customer Account</label>
+                <input
+                  type="text"
+                  readOnly
+                  value={bill.assignedTo || 'Unassigned'}
+                  className="readonly-input"
+                  style={{
+                    color: bill.assignedTo ? '#0f6b61' : '#6b7280',
+                    fontWeight: bill.assignedTo ? 700 : 400,
+                  }}
+                />
+              </div>
+              <div className="spec-field">
+                <label>Total Logged Sessions</label>
+                <input
+                  type="text"
+                  readOnly
+                  value={`${bill.totalSessions} sessions (${formatMinutes(bill.totalMinutes)} gross)`}
+                  className="readonly-input"
+                />
+              </div>
             </div>
           </div>
 
-          {/* PAYMENT & SETTLEMENT EDITABLE SECTION */}
+          {/* PAYMENT & SETTLEMENT SECTION */}
           <div className="bill-section-card payment-action-box">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-              <h4 style={{ margin: 0, fontSize: '13px', color: '#0f6b61', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Payment Status &amp; Settlement Details
+              <h4 style={{ margin: 0, fontSize: '12.5px', color: '#0f6b61', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Payment Status &amp; Settlement Details {isCustomerView && '(Verified by Admin)'}
               </h4>
-              {isSettledLocked && (
+              {isSettledLocked ? (
                 <span style={{ fontSize: '11px', color: '#7a887e', fontWeight: 600 }}>
                   Locked from sheet (Fully Paid)
                 </span>
-              )}
+              ) : isCustomerView ? (
+                <span style={{ fontSize: '11px', color: '#0f6b61', fontWeight: 600 }}>
+                  <ShieldCheck size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />
+                  Verified
+                </span>
+              ) : null}
             </div>
 
             <div className="bill-specs-grid">
@@ -455,7 +442,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 <select
                   value={status}
                   onChange={(e) => handleStatusChange(e.target.value as BillPaymentStatus)}
-                  disabled={isSettledLocked || saving}
+                  disabled={!isEditable || saving}
                   className="editable-select"
                   style={{ fontWeight: 700 }}
                 >
@@ -474,7 +461,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                   type="date"
                   value={paidOn}
                   onChange={(e) => setPaidOn(e.target.value)}
-                  disabled={isSettledLocked || status === 'Unpaid' || saving}
+                  disabled={!isEditable || status === 'Unpaid' || saving}
                   className="editable-input"
                 />
               </div>
@@ -487,7 +474,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                     type="number"
                     value={status === 'Fully Paid' ? bill.netAmount : paidAmount}
                     onChange={(e) => setPaidAmount(Number(e.target.value) || 0)}
-                    disabled={isSettledLocked || status !== 'Half Paid' || saving}
+                    disabled={!isEditable || status !== 'Half Paid' || saving}
                     className="editable-input"
                     placeholder="Enter received amount"
                   />
@@ -519,7 +506,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                disabled={isSettledLocked || saving}
+                disabled={!isEditable || saving}
                 placeholder="e.g. Bank transfer, UTR number, partial invoice notes..."
                 className="editable-input"
                 style={{ width: '100%' }}
@@ -530,27 +517,33 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
 
         {/* MODAL FOOTER */}
         <div className="modal-footer" style={{ flexWrap: 'wrap', gap: '8px' }}>
-          <button className="secondary-btn" onClick={handleExportStatementPdf} title="Export complete bill statement">
-            <Download size={14} /> Export Bill Statement (PDF)
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={() => generateBillStatementPdf(bill)}
+            title="Export complete work challan statement"
+          >
+            <Download size={14} /> Download Bill Statement (PDF)
           </button>
 
-          {(status === 'Half Paid' || status === 'Fully Paid') && (
+          {hasInvoice && onOpenInvoice && (
             <button
+              type="button"
               className="secondary-btn"
-              onClick={handleExportInvoicePdf}
-              title={status === 'Half Paid' ? 'Download Partial Payment Invoice' : 'Download Paid in Full Receipt'}
+              onClick={onOpenInvoice}
+              title="Open dedicated invoice document"
               style={{
                 borderColor: status === 'Half Paid' ? '#d97706' : '#0f6b61',
                 color: status === 'Half Paid' ? '#b45309' : '#0f6b61',
               }}
             >
-              <FileText size={14} />
-              {status === 'Half Paid' ? 'Partial Invoice (PDF)' : 'Payment Invoice (PDF)'}
+              <Receipt size={14} /> View Invoice
             </button>
           )}
 
-          {!isSettledLocked && (
+          {isEditable && (
             <button
+              type="button"
               className="primary-btn"
               onClick={handleSave}
               disabled={saving}

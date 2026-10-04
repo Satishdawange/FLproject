@@ -1,4 +1,5 @@
-import type { SessionEntry, SheetItem, BillItem } from '../types'
+import type { SessionEntry, SheetItem, BillItem, UserAccount } from '../types'
+import { formatBillingPeriod } from './calculations'
 
 export const DEFAULT_SHEET_URL =
   'https://script.google.com/macros/s/AKfycbzUwC-9ZPjAARznJCkS0FjBW12x01owiHhEN1IGFNkhT6UNb0l3xZcwj8SeAjDqhbvr/exec'
@@ -218,8 +219,14 @@ export function getDefaultSheetUrl(): string {
   return sheets[0]?.url || DEFAULT_SHEET_URL
 }
 
+function isPureSessionEntry(entry: unknown): entry is SessionEntry {
+  if (!entry || typeof entry !== 'object') return false
+  const idStr = String((entry as { id?: string | number }).id || '').trim().toUpperCase()
+  return !idStr.startsWith('BILL-') && !idStr.startsWith('INV-')
+}
+
 /**
- * Loads session entries cached for a specific Google Sheet URL
+ * Loads session entries cached for a specific Google Sheet URL (excludes bill entries)
  */
 export function loadSheetEntriesCache(url: string): SessionEntry[] {
   try {
@@ -227,7 +234,13 @@ export function loadSheetEntriesCache(url: string): SessionEntry[] {
     const raw = localStorage.getItem(key)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) return parsed
+      if (Array.isArray(parsed)) {
+        const pure = parsed.filter(isPureSessionEntry)
+        if (pure.length !== parsed.length) {
+          localStorage.setItem(key, JSON.stringify(pure))
+        }
+        return pure
+      }
     }
 
     // Fallback to legacy single-sheet cache if matching default URL
@@ -235,7 +248,13 @@ export function loadSheetEntriesCache(url: string): SessionEntry[] {
       const legacyRaw = localStorage.getItem('fl_sessions_cache')
       if (legacyRaw) {
         const parsed = JSON.parse(legacyRaw)
-        if (Array.isArray(parsed)) return parsed
+        if (Array.isArray(parsed)) {
+          const pure = parsed.filter(isPureSessionEntry)
+          if (pure.length !== parsed.length) {
+            localStorage.setItem('fl_sessions_cache', JSON.stringify(pure))
+          }
+          return pure
+        }
       }
     }
   } catch {
@@ -245,16 +264,17 @@ export function loadSheetEntriesCache(url: string): SessionEntry[] {
 }
 
 /**
- * Saves session entries cache for a specific Google Sheet URL
+ * Saves session entries cache for a specific Google Sheet URL (filters out any bills)
  */
 export function saveSheetEntriesCache(url: string, entries: SessionEntry[]): void {
   try {
+    const pureEntries = Array.isArray(entries) ? entries.filter(isPureSessionEntry) : []
     const key = `fl_sessions_cache_${getUrlStorageKey(url)}`
-    localStorage.setItem(key, JSON.stringify(entries))
+    localStorage.setItem(key, JSON.stringify(pureEntries))
 
     // Also update legacy key for backward compatibility if default URL
     if (url === DEFAULT_SHEET_URL) {
-      localStorage.setItem('fl_sessions_cache', JSON.stringify(entries))
+      localStorage.setItem('fl_sessions_cache', JSON.stringify(pureEntries))
     }
   } catch {
     // Ignore
@@ -270,13 +290,23 @@ export function loadSheetBillsCache(url: string): BillItem[] {
     const raw = localStorage.getItem(key)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) return parsed
+      if (Array.isArray(parsed)) {
+        return parsed.map((b) => ({
+          ...b,
+          selectedPeriod: formatBillingPeriod(b.selectedPeriod),
+        }))
+      }
     }
     // Fallback general key
     const gen = localStorage.getItem('fl_bills_cache')
     if (gen) {
       const parsed = JSON.parse(gen)
-      if (Array.isArray(parsed)) return parsed
+      if (Array.isArray(parsed)) {
+        return parsed.map((b) => ({
+          ...b,
+          selectedPeriod: formatBillingPeriod(b.selectedPeriod),
+        }))
+      }
     }
   } catch {
     // Ignore
@@ -289,9 +319,55 @@ export function loadSheetBillsCache(url: string): BillItem[] {
  */
 export function saveSheetBillsCache(url: string, bills: BillItem[]): void {
   try {
+    const sanitized = Array.isArray(bills)
+      ? bills.map((b) => ({
+          ...b,
+          selectedPeriod: formatBillingPeriod(b.selectedPeriod),
+        }))
+      : []
     const key = `fl_bills_cache_${getUrlStorageKey(url)}`
-    localStorage.setItem(key, JSON.stringify(bills))
-    localStorage.setItem('fl_bills_cache', JSON.stringify(bills))
+    localStorage.setItem(key, JSON.stringify(sanitized))
+    localStorage.setItem('fl_bills_cache', JSON.stringify(sanitized))
+  } catch {
+    // Ignore
+  }
+}
+
+export const DEFAULT_SHEET_USERS: UserAccount[] = [
+  { username: 'admin', name: 'Satish Gaikwad', fullName: 'Satish Gaikwad', role: 'admin' },
+  { username: 'viewer', name: 'Client Viewer', fullName: 'Client Viewer', role: 'read' },
+]
+
+/**
+ * Loads users cached for a specific Google Sheet URL
+ */
+export function loadSheetUsersCache(url: string): UserAccount[] {
+  try {
+    const key = `fl_users_cache_${getUrlStorageKey(url)}`
+    const raw = localStorage.getItem(key)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    }
+    const gen = localStorage.getItem('fl_users_cache')
+    if (gen) {
+      const parsed = JSON.parse(gen)
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    }
+  } catch {
+    // Ignore
+  }
+  return DEFAULT_SHEET_USERS
+}
+
+/**
+ * Saves users cache for a specific Google Sheet URL
+ */
+export function saveSheetUsersCache(url: string, users: UserAccount[]): void {
+  try {
+    const key = `fl_users_cache_${getUrlStorageKey(url)}`
+    localStorage.setItem(key, JSON.stringify(users))
+    localStorage.setItem('fl_users_cache', JSON.stringify(users))
   } catch {
     // Ignore
   }
