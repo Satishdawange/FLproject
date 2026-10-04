@@ -1,22 +1,26 @@
 import React, { useState, useMemo } from 'react'
-import { X, Download, Printer, Calendar, User, Sparkles } from 'lucide-react'
+import { X, Download, Printer, Calendar, User, Sparkles, RefreshCw } from 'lucide-react'
 
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import type { SessionEntry } from '../types'
+import type { SessionEntry, BillItem } from '../types'
 import { formatMinutes, formatRupees, getMonthLabel } from '../utils/calculations'
 
 interface ChallanModalProps {
   entries: SessionEntry[]
   initialClient?: string
   onClose: () => void
+  onSyncBill?: (bill: BillItem) => Promise<boolean | void>
 }
 
 export const ChallanModal: React.FC<ChallanModalProps> = ({
   entries,
   initialClient = 'All clients',
   onClose,
+  onSyncBill,
 }) => {
+  const [syncing, setSyncing] = useState(false)
+  const [syncSuccessMsg, setSyncSuccessMsg] = useState<string | null>(null)
   const today = new Date().toLocaleDateString('en-IN', {
     day: 'numeric',
     month: 'short',
@@ -206,6 +210,76 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
     doc.save(`satish-servicenow-challan-${safeClient}-${safeMonth}.pdf`)
   }
 
+  const createBillObject = (): BillItem => {
+    const rawMonth = selectedMonth === 'all' ? new Date().toISOString().slice(0, 7) : selectedMonth
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000)
+    const billId = `BILL-${rawMonth.replace('-', '')}-${randomSuffix}`
+    const now = new Date()
+    const createdOn =
+      now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) +
+      ' ' +
+      now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+
+    const uniqueProjects =
+      Array.from(new Set(challanEntries.map((e) => e.project).filter(Boolean))).join(', ') ||
+      'ServiceNow Support'
+
+    return {
+      billId,
+      createdOn,
+      selectedPeriod: periodLabel,
+      client: selectedClient === 'All clients' ? 'All Clients' : selectedClient,
+      project: uniqueProjects,
+      totalSessions: challanEntries.length,
+      totalMinutes: totals.totalMinutes,
+      discountMinutes: totals.discountMinutes,
+      effectiveMinutes: totals.effectiveMinutes,
+      grossAmount: Math.round(totals.grossMoney),
+      discountMoney: Math.round(totals.discountMoney),
+      netAmount: Math.round(totals.netMoney),
+      status: 'Unpaid',
+      paidAmount: 0,
+      paidOn: '',
+      notes: `Generated via Challan for ${periodLabel}`,
+    }
+  }
+
+  const handleSyncAndDownloadPdf = async () => {
+    if (challanEntries.length === 0) return
+    setSyncing(true)
+    setSyncSuccessMsg(null)
+    try {
+      const bill = createBillObject()
+      if (onSyncBill) {
+        await onSyncBill(bill)
+      }
+      setSyncSuccessMsg(`Bill ${bill.billId} recorded in Bills tab!`)
+    } catch (err) {
+      console.error('Failed to sync bill:', err)
+    } finally {
+      setSyncing(false)
+      handleDownloadPdf()
+    }
+  }
+
+  const handleSyncAndPrint = async () => {
+    if (challanEntries.length === 0) return
+    setSyncing(true)
+    setSyncSuccessMsg(null)
+    try {
+      const bill = createBillObject()
+      if (onSyncBill) {
+        await onSyncBill(bill)
+      }
+      setSyncSuccessMsg(`Bill ${bill.billId} recorded in Bills tab!`)
+    } catch (err) {
+      console.error('Failed to sync bill:', err)
+    } finally {
+      setSyncing(false)
+      window.print()
+    }
+  }
+
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
@@ -377,21 +451,37 @@ export const ChallanModal: React.FC<ChallanModalProps> = ({
         </div>
 
 
-        <div className="modal-footer">
-          <span className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        <div className="modal-footer" style={{ gap: '8px', flexWrap: 'wrap' }}>
+          {syncSuccessMsg && (
+            <span style={{ color: '#0f6b61', fontSize: '11px', fontWeight: 700, width: '100%', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              ✓ {syncSuccessMsg}
+            </span>
+          )}
+          <span className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px', marginRight: 'auto' }}>
             <Sparkles size={13} color="#0f6b61" />
             Dynamically filtered for {periodLabel}
           </span>
-          <button className="secondary-btn" onClick={() => window.print()}>
+          <button className="secondary-btn" onClick={() => window.print()} title="Print without syncing to sheet">
             <Printer size={15} /> Print
           </button>
           <button
-            className="primary-btn"
-            onClick={handleDownloadPdf}
-            disabled={challanEntries.length === 0}
-            style={{ gap: '6px' }}
+            className="secondary-btn"
+            onClick={handleSyncAndPrint}
+            disabled={syncing || challanEntries.length === 0}
+            title="Record bill in Bills tab and open print preview"
           >
-            <Download size={15} /> Download PDF Challan
+            <RefreshCw size={14} className={syncing ? 'spin-icon' : ''} />
+            {syncing ? 'Syncing...' : 'Sync & Print'}
+          </button>
+          <button
+            className="primary-btn"
+            onClick={handleSyncAndDownloadPdf}
+            disabled={syncing || challanEntries.length === 0}
+            style={{ gap: '6px' }}
+            title="Record bill in Bills tab and download PDF"
+          >
+            <Download size={15} />
+            {syncing ? 'Syncing...' : 'Sync & Download PDF'}
           </button>
         </div>
       </div>

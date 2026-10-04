@@ -23,15 +23,15 @@ import {
   FileSpreadsheet,
   Menu,
   BarChart3,
+  Receipt,
 } from 'lucide-react'
-
 
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
 import './App.css'
-import type { AuthUser, SessionEntry, SheetConfig, SheetItem } from './types'
+import type { AuthUser, SessionEntry, SheetConfig, SheetItem, BillItem } from './types'
 
 import {
   formatMinutes,
@@ -45,6 +45,8 @@ import {
   getDefaultSheetUrl,
   loadSheetEntriesCache,
   saveSheetEntriesCache,
+  loadSheetBillsCache,
+  saveSheetBillsCache,
   addCustomSheetUrl,
   removeCustomSheetUrl,
   cacheSheetName,
@@ -58,16 +60,17 @@ import { DailyBreakdownView } from './components/DailyBreakdownView'
 import { WeeklyBreakdownView } from './components/WeeklyBreakdownView'
 import { MonthlyBreakdownView } from './components/MonthlyBreakdownView'
 import { AnalyticsView } from './components/AnalyticsView'
+import { BillsView } from './components/BillsView'
 
 
 
 export default function App() {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), [])
 
-  // Mandatory Session Authentication (stored in sessionStorage per session)
+  // Persistent Authentication (persists across sessions until logout, cache clear, or password change)
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
     try {
-      const saved = sessionStorage.getItem('fl_auth_user')
+      const saved = localStorage.getItem('fl_auth_user') || sessionStorage.getItem('fl_auth_user')
       return saved ? JSON.parse(saved) : null
     } catch {
       return null
@@ -121,11 +124,23 @@ export default function App() {
     }
   })
 
+  // Bills loaded from active sheet cache
+  const [bills, setBills] = useState<BillItem[]>(() => {
+    const initialUrl = getDefaultSheetUrl()
+    try {
+      const savedUrl = localStorage.getItem('fl_active_sheet_url') || initialUrl
+      return loadSheetBillsCache(savedUrl)
+    } catch {
+      return []
+    }
+  })
 
   // View & UI Navigation
-  const [activeView, setActiveView] = useState<'ledger' | 'daily' | 'weekly' | 'monthly' | 'analytics'>('ledger')
+  const [activeView, setActiveView] = useState<
+    'ledger' | 'daily' | 'weekly' | 'monthly' | 'analytics' | 'bills'
+  >('ledger')
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
-  const [period, setPeriod] = useState<'All time' | 'Today' | 'This week' | 'This month' | 'Custom'>('All time')
+  const [period, setPeriod] = useState<'All time' | 'Today' | 'This week' | 'This month' | 'Custom'>('This month')
   // Client filter states
   const [selectedClient, setSelectedClient] = useState('All clients')
   const [isClientSearchMode, setIsClientSearchMode] = useState(false)
@@ -191,6 +206,12 @@ export default function App() {
     saveSheetEntriesCache(urlToUse, newEntries)
   }
 
+  // Save bills to localStorage cache for a specific sheet URL
+  const saveBillsCache = (newBills: BillItem[], urlToUse = activeSheetUrl) => {
+    setBills(newBills)
+    saveSheetBillsCache(urlToUse, newBills)
+  }
+
   // Handle Sheet Config Save
   const handleSaveSheetConfig = (newConfig: SheetConfig) => {
     setSheetConfig(newConfig)
@@ -206,13 +227,14 @@ export default function App() {
     async (targetUrl = activeSheetUrl) => {
       if (!targetUrl) return
       setSyncing(true)
-      setSyncStatus('Fetching records from Google Sheet...')
+      setSyncStatus('Fetching records & bills from Google Sheet...')
 
       try {
-        // Fetch both connection ping (for current spreadsheet title) and entries
-        const [pingRes, res] = await Promise.all([
+        // Fetch connection ping, entries, and bills concurrently
+        const [pingRes, res, billsRes] = await Promise.all([
           googleSheetsApi.testConnection(targetUrl).catch(() => null),
           googleSheetsApi.fetchEntries(targetUrl),
+          googleSheetsApi.getBills(targetUrl).catch(() => ({ success: false, bills: [] })),
         ])
 
         const liveTitle = pingRes?.sheetName || res.sheetName
@@ -223,6 +245,11 @@ export default function App() {
 
         if (res.success && Array.isArray(res.entries)) {
           saveEntriesCache(res.entries, targetUrl)
+
+          if (billsRes && billsRes.success && Array.isArray(billsRes.bills)) {
+            saveBillsCache(billsRes.bills, targetUrl)
+          }
+
           const updatedConfig: SheetConfig = {
             webAppUrl: targetUrl,
             sheetName: liveTitle || sheetConfig.sheetName,
@@ -232,10 +259,11 @@ export default function App() {
           setSheetConfig(updatedConfig)
           localStorage.setItem('fl_sheet_config', JSON.stringify(updatedConfig))
           const label = liveTitle || 'Google Sheet'
+          const billsCount = billsRes && Array.isArray(billsRes.bills) ? billsRes.bills.length : bills.length
           if (res.entries.length === 0 && pingRes?.sheets && pingRes.sheets.some((s: string) => /^[0-9]{4}-[0-9]{1,2}$/.test(s.trim()))) {
             setSyncStatus(`Connected to "${label}", but 0 entries returned. Please redeploy Apps Script (Deploy > Manage deployments > Edit > New version).`)
           } else {
-            setSyncStatus(`Synced ${res.entries.length} entries from "${label}"`)
+            setSyncStatus(`Synced ${res.entries.length} entries & ${billsCount} bills from "${label}"`)
           }
         } else {
           setSyncStatus(res.error || res.message || 'Sync failed. Check Apps Script URL.')
@@ -247,7 +275,7 @@ export default function App() {
         setTimeout(() => setSyncStatus(null), 4000)
       }
     },
-    [activeSheetUrl, sheetConfig.sheetName]
+    [activeSheetUrl, sheetConfig.sheetName, bills.length]
   )
 
   // Switch active Google Sheet
@@ -266,12 +294,53 @@ export default function App() {
     setSheetConfig(updatedConfig)
     localStorage.setItem('fl_sheet_config', JSON.stringify(updatedConfig))
 
-    // 1. Immediately display cached entries for this sheet (zero delay)
+    // 1. Immediately display cached entries and bills for this sheet (zero delay)
     const cached = loadSheetEntriesCache(newUrl)
     setEntries(cached)
+    const cachedBills = loadSheetBillsCache(newUrl)
+    setBills(cachedBills)
 
-    // 2. Fetch fresh entries from the selected sheet
+    // 2. Fetch fresh entries & bills from the selected sheet
     handleSyncWithGoogleSheets(newUrl)
+  }
+
+  // Handle sync/record new bill from Challan Modal
+  const handleSyncBill = async (bill: BillItem): Promise<boolean> => {
+    // 1. Prepend to local state and cache immediately
+    const updated = [bill, ...bills.filter((b) => b.billId !== bill.billId)]
+    saveBillsCache(updated, activeSheetUrl)
+
+    // 2. Append to connected Google Sheets tab 'Bills'
+    if (activeSheetUrl && sheetConfig.isConnected) {
+      try {
+        const res = await googleSheetsApi.addBill(activeSheetUrl, bill)
+        if (!res.success) {
+          console.warn('Google Sheets addBill warning:', res.error || res.message)
+        }
+      } catch (err) {
+        console.error('Failed to sync bill to Google Sheets:', err)
+      }
+    }
+    return true
+  }
+
+  // Handle update bill status / payment from BillDetailModal
+  const handleUpdateBill = async (updatedBill: BillItem): Promise<boolean> => {
+    // 1. Update local state and cache immediately
+    const updated = bills.map((b) => (b.billId === updatedBill.billId ? updatedBill : b))
+    saveBillsCache(updated, activeSheetUrl)
+
+    // 2. Update connected Google Sheets tab 'Bills'
+    if (activeSheetUrl && sheetConfig.isConnected) {
+      try {
+        const res = await googleSheetsApi.updateBill(activeSheetUrl, updatedBill)
+        return Boolean(res.success)
+      } catch (err) {
+        console.error('Failed to update bill in Google Sheets:', err)
+        return false
+      }
+    }
+    return true
   }
 
   // Initial sync when connected and user is logged in
@@ -282,23 +351,63 @@ export default function App() {
   }, [currentUser, activeSheetUrl, sheetConfig.isConnected, entries.length, handleSyncWithGoogleSheets])
 
 
-  // Login handler (Mandatory Session login)
+  // Login handler - persists credentials across sessions until explicit logout or password change
   const handleLoginSuccess = (user: AuthUser) => {
     setCurrentUser(user)
-    sessionStorage.setItem('fl_auth_user', JSON.stringify(user))
-    localStorage.removeItem('fl_auth_user') // remove old persistent storage
+    try {
+      localStorage.setItem('fl_auth_user', JSON.stringify(user))
+      sessionStorage.setItem('fl_auth_user', JSON.stringify(user))
+    } catch {
+      // ignore storage error
+    }
     if (sheetConfig.webAppUrl && sheetConfig.isConnected) {
       handleSyncWithGoogleSheets()
     }
   }
 
-  // Logout handler
-  const handleLogout = () => {
+  // Logout handler - explicitly removes stored credentials
+  const handleLogout = useCallback(() => {
     setCurrentUser(null)
-    sessionStorage.removeItem('fl_auth_user')
-    localStorage.removeItem('fl_auth_user')
+    try {
+      localStorage.removeItem('fl_auth_user')
+      sessionStorage.removeItem('fl_auth_user')
+    } catch {
+      // ignore
+    }
     setMobileNavOpen(false)
-  }
+  }, [])
+
+  // Auto-verify stored credentials in background against Google Sheets
+  // If the user's password was changed in Google Sheets, automatically prompt for re-authentication
+  useEffect(() => {
+    if (!currentUser?.credentialHash || !sheetConfig.webAppUrl || !sheetConfig.isConnected) return
+
+    let isSubscribed = true
+    try {
+      const decoded = atob(currentUser.credentialHash)
+      const colonIdx = decoded.indexOf(':')
+      if (colonIdx > 0) {
+        const uname = decoded.slice(0, colonIdx)
+        const pwd = decoded.slice(colonIdx + 1)
+        googleSheetsApi.login(sheetConfig.webAppUrl, uname, pwd).then((res) => {
+          if (!isSubscribed) return
+          if (!res.success) {
+            console.warn('Session credentials rejected: password may have changed in Google Sheets.')
+            handleLogout()
+            alert('Your password or user credentials have changed in Google Sheets. Please sign in again.')
+          }
+        }).catch(() => {
+          // Network offline / slow connection: keep session active
+        })
+      }
+    } catch {
+      // ignore
+    }
+
+    return () => {
+      isSubscribed = false
+    }
+  }, [currentUser?.credentialHash, sheetConfig.webAppUrl, sheetConfig.isConnected, handleLogout])
 
   // Custom clients & projects persistence
   const [customClients, setCustomClients] = useState<string[]>(() => {
@@ -503,6 +612,46 @@ export default function App() {
     )
   }, [filteredEntries])
 
+  // September 2026 Cutoff Payment Settlement Calculation
+  // By policy: all earnings prior to 2026-10-01 (Sept 2026 and earlier) are 100% Settled / Paid by default
+  // From October 2026 onwards, settlements and receivables track dynamically via the Bills tab
+  const settlementMetrics = useMemo(() => {
+    const preOctoberNet = filteredEntries
+      .filter((e) => e.date < '2026-10-01')
+      .reduce((acc, e) => acc + (Number(e.moneyWithDiscount) || 0), 0)
+
+    const postSeptemberNet = filteredEntries
+      .filter((e) => e.date >= '2026-10-01')
+      .reduce((acc, e) => acc + (Number(e.moneyWithDiscount) || 0), 0)
+
+    let billsPaid = 0
+    let billsPending = 0
+    bills.forEach((b) => {
+      const net = Number(b.netAmount) || 0
+      if (b.status === 'Fully Paid') {
+        billsPaid += b.paidAmount || net
+      } else if (b.status === 'Half Paid') {
+        const paid = Number(b.paidAmount) || 0
+        billsPaid += paid
+        billsPending += Math.max(0, net - paid)
+      } else {
+        billsPending += net
+      }
+    })
+
+    const totalSettledPaid = preOctoberNet + billsPaid
+    const totalPendingDue = billsPending + Math.max(0, postSeptemberNet - (billsPaid + billsPending))
+
+    return {
+      preOctoberNet,
+      postSeptemberNet,
+      billsPaid,
+      billsPending,
+      totalSettledPaid,
+      totalPendingDue,
+    }
+  }, [filteredEntries, bills])
+
   // Daily, Weekly and Monthly Aggregations
   const dailySummaries = useMemo(() => groupSessionsByDay(filteredEntries), [filteredEntries])
   const weeklySummaries = useMemo(() => groupSessionsByWeek(filteredEntries), [filteredEntries])
@@ -514,6 +663,69 @@ export default function App() {
     const sum = filteredEntries.reduce((acc, e) => acc + (Number(e.rate) || 0), 0)
     return Math.round(sum / filteredEntries.length)
   }, [filteredEntries])
+
+  // Full Name of logged in user
+  const userFullName = useMemo(() => {
+    if (!currentUser) return 'User'
+    if (currentUser.fullName) return currentUser.fullName
+    if (currentUser.name) return currentUser.name
+    if (currentUser.role === 'admin' || currentUser.username.toLowerCase() === 'admin') {
+      return 'Satish Gaikwad'
+    }
+    if (currentUser.username.toLowerCase() === 'viewer') {
+      return 'Client Viewer'
+    }
+    return currentUser.username
+  }, [currentUser])
+
+  // Dynamic Greeting based on current time of day and user role
+  const greetingInfo = useMemo(() => {
+    const hour = new Date().getHours()
+    let timeGreeting = 'Hello'
+    let icon = '👋'
+
+    if (hour >= 5 && hour < 12) {
+      timeGreeting = 'Good morning'
+      icon = '☀️'
+    } else if (hour >= 12 && hour < 17) {
+      timeGreeting = 'Good afternoon'
+      icon = '🌤️'
+    } else if (hour >= 17 && hour < 22) {
+      timeGreeting = 'Good evening'
+      icon = '🌆'
+    } else {
+      timeGreeting = 'Good evening'
+      icon = '🌙'
+    }
+
+    const fullGreeting = `${timeGreeting}, ${userFullName}`
+
+    let dynamicMessage = ''
+    if (isAdmin) {
+      if (hour < 12) {
+        dynamicMessage = `Ready to manage today's ServiceNow support sessions and track client billables.`
+      } else if (hour < 17) {
+        dynamicMessage = `Overview of your daytime ServiceNow support workloads, entries, and sheet synchronizations.`
+      } else {
+        dynamicMessage = `Wrap up your daily ServiceNow support sessions and generate client statements.`
+      }
+    } else {
+      if (hour < 12) {
+        dynamicMessage = `Welcome to your ServiceNow support workspace. Here is your daily session breakdown.`
+      } else if (hour < 17) {
+        dynamicMessage = `Here is your afternoon overview of ServiceNow support hours and project progress.`
+      } else {
+        dynamicMessage = `Summary of your logged ServiceNow support hours and session history.`
+      }
+    }
+
+    return {
+      timeGreeting,
+      icon,
+      fullGreeting,
+      dynamicMessage,
+    }
+  }, [currentUser, isAdmin])
 
   // Excel (.xlsx) Multi-Sheet Export (excludes earned money for Customer)
   const handleExportExcel = () => {
@@ -620,17 +832,27 @@ export default function App() {
     doc.setFont('helvetica', 'bold')
     doc.text(isAdmin ? 'SATISH SERVICENOW SUPPORT - TIME & BILLING REPORT' : 'SATISH SERVICENOW SUPPORT - WORK SESSIONS REPORT', 14, 16)
 
+    const clientLabel = isClientSearchMode
+      ? `Client: "${clientSearchText || 'Any'}"`
+      : `Client: ${selectedClient}`
+    const projectLabel = isProjectSearchMode
+      ? `Project: "${projectSearchText || 'Any'}"`
+      : `Project: ${selectedProject}`
+    const periodLabel = period === 'Custom' ? `Period: Custom (${customStartDate} to ${customEndDate})` : `Period: ${period}`
+    const searchFilterStr = searchQuery ? `Search: "${searchQuery}"` : null
+    const appliedFilters = [periodLabel, clientLabel, projectLabel, searchFilterStr].filter(Boolean).join(' | ')
+
     doc.setTextColor(50, 60, 55)
-    doc.setFontSize(9)
+    doc.setFontSize(8.5)
     doc.setFont('helvetica', 'normal')
     doc.text(
-      `Period: ${period} | Total Entries: ${filteredEntries.length} | Generated: ${new Date().toLocaleDateString('en-IN')}`,
+      `Filters Applied: ${appliedFilters} | Sessions: ${filteredEntries.length} | Generated: ${new Date().toLocaleDateString('en-IN')}`,
       14,
       32
     )
     if (isAdmin) {
       doc.text(
-        `Effective Hours: ${formatMinutes(totals.effectiveMinutes)} | Gross: ${formatRupees(totals.grossMoney)} | Net: ${formatRupees(totals.netMoney)}`,
+        `Effective Hours: ${formatMinutes(totals.effectiveMinutes)} | Gross: ${formatRupees(totals.grossMoney)} | Net: ${formatRupees(totals.netMoney)} | Settled (Paid): ${formatRupees(settlementMetrics.totalSettledPaid)} | Pending Due: ${formatRupees(settlementMetrics.totalPendingDue)}`,
         14,
         38
       )
@@ -724,10 +946,20 @@ export default function App() {
         {/* User Card */}
         <div className="user-status-card">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <strong>{currentUser.username}</strong>
-            <span className={`role-badge ${currentUser.role}`}>
-              {isAdmin ? 'Admin' : 'Customer'}
-            </span>
+            <strong
+              title={userFullName}
+              style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}
+            >
+              {userFullName}
+            </strong>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
+              <span className={`role-badge ${currentUser.role}`}>
+                {isAdmin ? 'Admin' : 'Customer'}
+              </span>
+              {currentUser.username && userFullName.toLowerCase() !== currentUser.username.toLowerCase() && (
+                <span style={{ fontSize: '11px', color: '#68776d' }}>@{currentUser.username}</span>
+              )}
+            </div>
           </div>
           <button
             className="icon-btn"
@@ -792,6 +1024,19 @@ export default function App() {
           >
             <BarChart3 size={17} /> Analytics Dashboard
           </button>
+
+          {isAdmin && (
+            <button
+              className={`nav-item ${activeView === 'bills' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveView('bills')
+                setMobileNavOpen(false)
+              }}
+            >
+              <Receipt size={17} /> Bills &amp; Invoices
+              <span className="nav-badge">{bills.length}</span>
+            </button>
+          )}
 
           {isAdmin && (
             <>
@@ -876,6 +1121,7 @@ export default function App() {
                 {activeView === 'weekly' && 'Weekly Workload Breakdown'}
                 {activeView === 'monthly' && 'Monthly Aggregations'}
                 {activeView === 'analytics' && 'Analytics & Visual Insights'}
+                {activeView === 'bills' && 'Bills & Invoices Register'}
               </strong>
             </div>
           </div>
@@ -945,6 +1191,20 @@ export default function App() {
               </div>
             )}
 
+            {/* Logged in User Profile Pill in Topbar */}
+            <div
+              className="topbar-user-badge"
+              title={`Logged in as ${userFullName} (${isAdmin ? 'Administrator' : 'Customer View'})`}
+            >
+              <div className="user-avatar-circle">
+                {userFullName.charAt(0).toUpperCase()}
+              </div>
+              <div className="topbar-user-info">
+                <span className="user-fullname-text">{userFullName}</span>
+                <span className="user-role-subtext">{isAdmin ? 'Admin' : 'Customer'}</span>
+              </div>
+            </div>
+
             <button
               className="icon-btn logout-topbar-btn"
               onClick={handleLogout}
@@ -961,7 +1221,7 @@ export default function App() {
             <div className="read-access-banner">
               <ShieldCheck size={16} />
               <span>
-                <b>Customer Portal Mode:</b> You are logged in with view-only permissions. You can inspect all work sessions, daily, weekly, and monthly summaries, see hourly rates, and export work logs. Financial totals and entry creation are restricted to Administrator view.
+                <b>Customer Portal Mode:</b> Welcome, <b>{userFullName}</b>! You are logged in with view-only permissions. You can inspect all work sessions, daily, weekly, and monthly summaries, see hourly rates, and export work logs. Financial totals and entry creation are restricted to Administrator view.
               </span>
             </div>
           )}
@@ -977,23 +1237,30 @@ export default function App() {
           {/* Heading Section */}
           <section className="page-heading">
             <div>
-              <p className="eyebrow">
-                {new Date().toLocaleDateString('en-IN', {
-                  weekday: 'long',
-                  day: 'numeric',
-                  month: 'long',
-                  year: 'numeric',
-                })}
-              </p>
+              <div className="eyebrow-container">
+                <span className="greeting-pill">
+                  <span className="greeting-icon">{greetingInfo.icon}</span>
+                  <strong>{greetingInfo.fullGreeting}!</strong>
+                </span>
+                <span className="eyebrow-dot">•</span>
+                <p className="eyebrow">
+                  {new Date().toLocaleDateString('en-IN', {
+                    weekday: 'long',
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                  })}
+                </p>
+              </div>
               <h1>Satish Servicenow Support</h1>
               <p className="subheading">
-                Session tracking, daily aggregations, time discounts, and Google Sheets synchronization.
+                {greetingInfo.dynamicMessage}
               </p>
             </div>
           </section>
 
           {/* SUMMARY CARDS (KPIs) - Role-Aware (Excludes earned money for Customer) */}
-          {activeView !== 'analytics' && (
+          {activeView !== 'analytics' && activeView !== 'bills' && (
             <section className="summary-grid">
               <div className="summary-card highlight">
                 <div className="card-top">
@@ -1028,9 +1295,36 @@ export default function App() {
                     </span>
                   </div>
                   <strong style={{ color: '#0f6b61' }}>{formatRupees(totals.netMoney)}</strong>
-                  <small style={{ color: '#88948c' }}>
-                    Gross: {formatRupees(totals.grossMoney)} (-{formatRupees(totals.discountMoney)} disc.)
-                  </small>
+                  <div style={{ display: 'flex', gap: '5px', marginTop: '6px', flexWrap: 'wrap' }}>
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        background: '#dcfce7',
+                        color: '#166534',
+                        padding: '2px 7px',
+                        borderRadius: '4px',
+                      }}
+                      title="Pre-October 2026 earnings are 100% settled. October 2026+ verified via Bills sheet."
+                    >
+                      Paid: {formatRupees(settlementMetrics.totalSettledPaid)}
+                    </span>
+                    {settlementMetrics.totalPendingDue > 0 && (
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          background: '#fef3c7',
+                          color: '#b45309',
+                          padding: '2px 7px',
+                          borderRadius: '4px',
+                        }}
+                        title="October 2026+ challan bills awaiting settlement"
+                      >
+                        Due: {formatRupees(settlementMetrics.totalPendingDue)}
+                      </span>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="summary-card">
@@ -1096,10 +1390,18 @@ export default function App() {
               >
                 <BarChart3 size={15} /> Analytics Dashboard
               </button>
+              {isAdmin && (
+                <button
+                  className={`view-tab-btn ${activeView === 'bills' ? 'selected' : ''}`}
+                  onClick={() => setActiveView('bills')}
+                >
+                  <Receipt size={15} /> Bills &amp; Invoices ({bills.length})
+                </button>
+              )}
             </div>
 
             {/* Filter controls */}
-            {activeView !== 'analytics' && (
+            {activeView !== 'analytics' && activeView !== 'bills' && (
               <div className="toolbar-actions">
               {/* Period dropdown */}
               <select
@@ -1226,6 +1528,19 @@ export default function App() {
               userRole={currentUser.role}
               availableClients={clientsList}
               availableProjects={projectsList}
+              bills={bills}
+            />
+          )}
+
+          {activeView === 'bills' && isAdmin && (
+            <BillsView
+              bills={bills}
+              userRole={currentUser.role}
+              sheetName={sheetConfig.sheetName}
+              onUpdateBill={handleUpdateBill}
+              onOpenCreateChallan={() => setShowChallanModal(true)}
+              onRefreshBills={() => handleSyncWithGoogleSheets(activeSheetUrl)}
+              isSyncing={syncing}
             />
           )}
 
@@ -1284,7 +1599,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="table-wrap">
+              <div className="table-wrap ledger-table-wrap">
                 <table>
                   <thead>
                     <tr>
@@ -1459,6 +1774,7 @@ export default function App() {
           entries={entries}
           initialClient={selectedClient}
           onClose={() => setShowChallanModal(false)}
+          onSyncBill={handleSyncBill}
         />
       )}
 

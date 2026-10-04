@@ -74,6 +74,12 @@ function handleRequest(params) {
       output = handleGetEntries(ss, params.month);
     } else if (action === 'addEntry') {
       output = handleAddEntry(ss, params);
+    } else if (action === 'getBills') {
+      output = handleGetBills(ss);
+    } else if (action === 'addBill') {
+      output = handleAddBill(ss, params);
+    } else if (action === 'updateBill') {
+      output = handleUpdateBill(ss, params);
     } else if (action === 'init') {
       initSheet();
       output = { success: true, message: 'Initialized sheet structure.' };
@@ -104,7 +110,7 @@ function initSheet() {
     userSheet.setFrozenRows(1);
     
     // Add default accounts
-    userSheet.appendRow(['admin', 'admin123', 'admin', 'Administrator', new Date().toISOString()]);
+    userSheet.appendRow(['admin', 'admin123', 'admin', 'Satish Gaikwad', new Date().toISOString()]);
     userSheet.appendRow(['viewer', 'view123', 'read', 'Client Viewer', new Date().toISOString()]);
   }
 }
@@ -425,4 +431,174 @@ function handleGetEntries(ss, targetMonth) {
     count: entries.length
   };
 }
+
+/**
+ * =========================================================================
+ * BILLS & INVOICE MANAGEMENT IN 'Bills' TAB
+ * =========================================================================
+ */
+
+function getOrCreateBillsSheet(ss) {
+  var sheet = ss.getSheetByName('Bills');
+  if (!sheet) {
+    sheet = ss.insertSheet('Bills');
+    var headers = [
+      'Bill ID',
+      'Created On',
+      'Selected Period',
+      'Client',
+      'Project',
+      'Total Sessions',
+      'Total Minutes',
+      'Discount Minutes',
+      'Effective Minutes',
+      'Gross Amount (₹)',
+      'Discount Money (₹)',
+      'Net Amount (₹)',
+      'Status',
+      'Paid Amount (₹)',
+      'Paid On',
+      'Notes'
+    ];
+    sheet.appendRow(headers);
+    var headerRange = sheet.getRange(1, 1, 1, headers.length);
+    headerRange.setBackground('#0f6b61');
+    headerRange.setFontColor('#ffffff');
+    headerRange.setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    
+    // Format numeric columns
+    sheet.getRange('J:L').setNumberFormat('₹#,##0.00');
+    sheet.getRange('N:N').setNumberFormat('₹#,##0.00');
+  }
+  return sheet;
+}
+
+function handleGetBills(ss) {
+  var sheet = getOrCreateBillsSheet(ss);
+  var data = sheet.getDataRange().getValues();
+  var bills = [];
+
+  if (data.length <= 1) {
+    return { success: true, bills: [] };
+  }
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[0]) continue;
+
+    bills.push({
+      billId: String(row[0] || ''),
+      createdOn: String(row[1] || ''),
+      selectedPeriod: String(row[2] || ''),
+      client: String(row[3] || ''),
+      project: String(row[4] || ''),
+      totalSessions: Number(row[5] || 0),
+      totalMinutes: Number(row[6] || 0),
+      discountMinutes: Number(row[7] || 0),
+      effectiveMinutes: Number(row[8] || 0),
+      grossAmount: Number(row[9] || 0),
+      discountMoney: Number(row[10] || 0),
+      netAmount: Number(row[11] || 0),
+      status: String(row[12] || 'Unpaid'),
+      paidAmount: row[13] !== '' && row[13] !== null ? Number(row[13]) : 0,
+      paidOn: String(row[14] || ''),
+      notes: String(row[15] || '')
+    });
+  }
+
+  return {
+    success: true,
+    bills: bills,
+    count: bills.length
+  };
+}
+
+function handleAddBill(ss, data) {
+  var sheet = getOrCreateBillsSheet(ss);
+  var billId = String(data.billId || ('BILL-' + new Date().getTime()));
+
+  // Check if billId already exists
+  var existing = sheet.getDataRange().getValues();
+  for (var i = 1; i < existing.length; i++) {
+    if (String(existing[i][0]).trim() === billId.trim()) {
+      return { success: true, message: 'Bill already registered', billId: billId };
+    }
+  }
+
+  var row = [
+    billId,
+    data.createdOn || new Date().toISOString(),
+    data.selectedPeriod || '',
+    data.client || '',
+    data.project || '',
+    Number(data.totalSessions || 0),
+    Number(data.totalMinutes || 0),
+    Number(data.discountMinutes || 0),
+    Number(data.effectiveMinutes || 0),
+    Math.round(Number(data.grossAmount || 0)),
+    Math.round(Number(data.discountMoney || 0)),
+    Math.round(Number(data.netAmount || 0)),
+    data.status || 'Unpaid',
+    data.paidAmount !== undefined && data.paidAmount !== '' ? Number(data.paidAmount) : '',
+    data.paidOn || '',
+    data.notes || ''
+  ];
+
+  sheet.appendRow(row);
+
+  return {
+    success: true,
+    message: 'Bill successfully recorded in Bills tab',
+    billId: billId
+  };
+}
+
+function handleUpdateBill(ss, data) {
+  var sheet = getOrCreateBillsSheet(ss);
+  var targetId = String(data.billId || '').trim();
+  if (!targetId) {
+    return { success: false, message: 'Missing billId parameter' };
+  }
+
+  var values = sheet.getDataRange().getValues();
+  var foundRow = -1;
+
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]).trim() === targetId) {
+      foundRow = i + 1; // 1-indexed sheet row
+      break;
+    }
+  }
+
+  if (foundRow === -1) {
+    return { success: false, message: 'Bill with ID ' + targetId + ' not found in sheet' };
+  }
+
+  // Update Status (col 13 / M)
+  if (data.status) {
+    sheet.getRange(foundRow, 13).setValue(data.status);
+  }
+
+  // Update Paid Amount (col 14 / N)
+  if (data.paidAmount !== undefined) {
+    sheet.getRange(foundRow, 14).setValue(data.paidAmount === '' ? '' : Number(data.paidAmount));
+  }
+
+  // Update Paid On (col 15 / O)
+  if (data.paidOn !== undefined) {
+    sheet.getRange(foundRow, 15).setValue(data.paidOn);
+  }
+
+  // Update Notes (col 16 / P)
+  if (data.notes !== undefined) {
+    sheet.getRange(foundRow, 16).setValue(data.notes);
+  }
+
+  return {
+    success: true,
+    message: 'Bill ' + targetId + ' updated successfully in Bills tab'
+  };
+}
 `
+

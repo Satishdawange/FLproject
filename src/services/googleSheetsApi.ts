@@ -1,4 +1,4 @@
-import type { AuthUser, SessionEntry } from '../types'
+import type { AuthUser, SessionEntry, BillItem } from '../types'
 
 
 export interface ApiResponse<T = unknown> {
@@ -9,7 +9,9 @@ export interface ApiResponse<T = unknown> {
   sheets?: string[]
   user?: AuthUser
   entries?: SessionEntry[]
+  bills?: BillItem[]
   count?: number
+  billId?: string
   data?: T
 }
 
@@ -84,4 +86,43 @@ export const googleSheetsApi = {
       ...entry,
     })
   },
+
+  /**
+   * Fetches all registered bills from the 'Bills' tab in Google Sheets
+   */
+  async getBills(url: string): Promise<ApiResponse<BillItem[]>> {
+    return callGoogleScript<BillItem[]>(url, {
+      action: 'getBills',
+    })
+  },
+
+  /**
+   * Appends a new bill entry to the 'Bills' tab in Google Sheets
+   */
+  async addBill(url: string, bill: BillItem): Promise<ApiResponse> {
+    return callGoogleScript(url, {
+      action: 'addBill',
+      ...bill,
+    })
+  },
+
+  /**
+   * Updates status, payment amount, date, and notes for an existing bill
+   */
+  async updateBill(
+    url: string,
+    billUpdate: {
+      billId: string
+      status: string
+      paidAmount?: number | string
+      paidOn?: string
+      notes?: string
+    }
+  ): Promise<ApiResponse> {
+    return callGoogleScript(url, {
+      action: 'updateBill',
+      ...billUpdate,
+    })
+  },
 }
+

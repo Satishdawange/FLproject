@@ -1,4 +1,4 @@
-import type { SessionEntry, SheetItem } from '../types'
+import type { SessionEntry, SheetItem, BillItem } from '../types'
 
 export const DEFAULT_SHEET_URL =
   'https://script.google.com/macros/s/AKfycbzUwC-9ZPjAARznJCkS0FjBW12x01owiHhEN1IGFNkhT6UNb0l3xZcwj8SeAjDqhbvr/exec'
@@ -260,3 +260,40 @@ export function saveSheetEntriesCache(url: string, entries: SessionEntry[]): voi
     // Ignore
   }
 }
+
+/**
+ * Loads bills cached for a specific Google Sheet URL
+ */
+export function loadSheetBillsCache(url: string): BillItem[] {
+  try {
+    const key = `fl_bills_cache_${getUrlStorageKey(url)}`
+    const raw = localStorage.getItem(key)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed
+    }
+    // Fallback general key
+    const gen = localStorage.getItem('fl_bills_cache')
+    if (gen) {
+      const parsed = JSON.parse(gen)
+      if (Array.isArray(parsed)) return parsed
+    }
+  } catch {
+    // Ignore
+  }
+  return []
+}
+
+/**
+ * Saves bills cache for a specific Google Sheet URL
+ */
+export function saveSheetBillsCache(url: string, bills: BillItem[]): void {
+  try {
+    const key = `fl_bills_cache_${getUrlStorageKey(url)}`
+    localStorage.setItem(key, JSON.stringify(bills))
+    localStorage.setItem('fl_bills_cache', JSON.stringify(bills))
+  } catch {
+    // Ignore
+  }
+}
+

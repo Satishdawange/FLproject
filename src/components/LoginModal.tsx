@@ -34,7 +34,18 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       try {
         const res = await googleSheetsApi.login(sheetConfig.webAppUrl, username, password)
         if (res.success && res.user) {
-          onLoginSuccess(res.user)
+          const credHash = btoa(`${username.trim()}:${password.trim()}`)
+          const fullName =
+            res.user.name ||
+            res.user.fullName ||
+            (res.user.role === 'admin' ? 'Satish Gaikwad' : res.user.username)
+          onLoginSuccess({
+            ...res.user,
+            name: fullName,
+            fullName: fullName,
+            credentialHash: credHash,
+            loginTimestamp: new Date().toISOString(),
+          })
           setLoading(false)
           return
         } else {
@@ -54,9 +65,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     const cleanPass = password.trim()
 
     if (cleanUser === 'admin' && cleanPass === 'admin123') {
-      onLoginSuccess({ username: 'Admin', role: 'admin' })
+      onLoginSuccess({
+        username: 'admin',
+        name: 'Satish Gaikwad',
+        fullName: 'Satish Gaikwad',
+        role: 'admin',
+        credentialHash: btoa(`${cleanUser}:${cleanPass}`),
+        loginTimestamp: new Date().toISOString(),
+      })
     } else if (cleanUser === 'viewer' && cleanPass === 'view123') {
-      onLoginSuccess({ username: 'Customer', role: 'read' })
+      onLoginSuccess({
+        username: 'viewer',
+        name: 'Client Viewer',
+        fullName: 'Client Viewer',
+        role: 'read',
+        credentialHash: btoa(`${cleanUser}:${cleanPass}`),
+        loginTimestamp: new Date().toISOString(),
+      })
     } else {
       setError('Invalid username or password. Please try again.')
     }
@@ -233,7 +258,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
               <div style={{ marginTop: '18px', textAlign: 'center', borderTop: '1px solid #edf2ed', paddingTop: '14px' }}>
                 <small style={{ color: '#828e85', fontSize: '11px' }}>
-                  Session authentication is mandatory for both Admin and Customer accounts.
+                  Your session stays active across visits until you sign out or clear browser cache.
                 </small>
               </div>
             </form>

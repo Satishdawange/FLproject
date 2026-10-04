@@ -2,7 +2,11 @@ export type UserRole = 'admin' | 'read'
 
 export interface AuthUser {
   username: string
+  name?: string
+  fullName?: string
   role: UserRole
+  credentialHash?: string
+  loginTimestamp?: string
 }
 
 export interface SessionEntry {
@@ -81,3 +85,25 @@ export interface SheetConfig {
   isConnected: boolean
   lastSyncedAt?: string
 }
+
+export type BillPaymentStatus = 'Unpaid' | 'Half Paid' | 'Fully Paid'
+
+export interface BillItem {
+  billId: string
+  createdOn: string // e.g. "2026-10-04 15:30"
+  selectedPeriod: string // e.g. "October 2026" or "2026-10"
+  client: string
+  project: string
+  totalSessions: number
+  totalMinutes: number
+  discountMinutes: number
+  effectiveMinutes: number
+  grossAmount: number
+  discountMoney: number
+  netAmount: number
+  status: BillPaymentStatus
+  paidAmount?: number
+  paidOn?: string
+  notes?: string
+}
+

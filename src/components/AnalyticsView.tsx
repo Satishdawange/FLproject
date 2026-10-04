@@ -11,7 +11,7 @@ import {
   Percent,
   RotateCcw,
 } from 'lucide-react'
-import type { SessionEntry } from '../types'
+import type { SessionEntry, BillItem } from '../types'
 import { formatMinutes, formatRupees } from '../utils/calculations'
 
 interface AnalyticsViewProps {
@@ -19,6 +19,7 @@ interface AnalyticsViewProps {
   userRole?: 'admin' | 'read'
   availableClients: string[]
   availableProjects: string[]
+  bills?: BillItem[]
 }
 
 const PALETTE = [
@@ -39,6 +40,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   userRole = 'read',
   availableClients,
   availableProjects,
+  bills = [],
 }) => {
   const isAdmin = userRole === 'admin'
 
@@ -142,6 +144,43 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     const sumRate = filteredEntries.reduce((acc, e) => acc + (Number(e.rate) || 0), 0)
     return Math.round(sumRate / filteredEntries.length)
   }, [filteredEntries])
+
+  // --- SETTLEMENT METRICS (September 2026 Cutoff Rule) ---
+  const settlementMetrics = useMemo(() => {
+    // By policy: all earnings before Oct 2026 are 100% Settled / Paid
+    const preOctNet = filteredEntries
+      .filter((e) => e.date < '2026-10-01')
+      .reduce((acc, e) => acc + (Number(e.moneyWithDiscount) || 0), 0)
+
+    const postSeptNet = filteredEntries
+      .filter((e) => e.date >= '2026-10-01')
+      .reduce((acc, e) => acc + (Number(e.moneyWithDiscount) || 0), 0)
+
+    let billsPaid = 0
+    let billsPending = 0
+    bills.forEach((b) => {
+      const net = Number(b.netAmount) || 0
+      if (b.status === 'Fully Paid') {
+        billsPaid += b.paidAmount || net
+      } else if (b.status === 'Half Paid') {
+        const paid = Number(b.paidAmount) || 0
+        billsPaid += paid
+        billsPending += Math.max(0, net - paid)
+      } else {
+        billsPending += net
+      }
+    })
+
+    const totalSettledPaid = preOctNet + billsPaid
+    const totalPendingDue = Math.max(0, totals.netMoney - totalSettledPaid)
+
+    return {
+      preOctNet,
+      postSeptNet,
+      totalSettledPaid,
+      totalPendingDue,
+    }
+  }, [filteredEntries, totals.netMoney, bills])
 
   // --- CLIENT DISTRIBUTION ---
   const clientBreakdown = useMemo(() => {
@@ -518,9 +557,36 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               <IndianRupee size={16} color="#0f6b61" />
             </div>
             <strong style={{ color: '#0f6b61' }}>{formatRupees(totals.netMoney)}</strong>
-            <small>
-              Gross: {formatRupees(totals.grossMoney)} (-{formatRupees(totals.discountMoney)} disc.)
-            </small>
+            <div style={{ display: 'flex', gap: '5px', marginTop: '6px', flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  fontSize: '10.5px',
+                  fontWeight: 700,
+                  background: '#dcfce7',
+                  color: '#166534',
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                }}
+                title="Pre-October 2026 earnings are 100% settled. October 2026+ verified via Bills sheet."
+              >
+                Paid: {formatRupees(settlementMetrics.totalSettledPaid)}
+              </span>
+              {settlementMetrics.totalPendingDue > 0 && (
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    fontWeight: 700,
+                    background: '#fef3c7',
+                    color: '#b45309',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                  }}
+                  title="October 2026+ challan bills awaiting settlement"
+                >
+                  Due: {formatRupees(settlementMetrics.totalPendingDue)}
+                </span>
+              )}
+            </div>
           </div>
         ) : (
           <div className="analytics-kpi-card">

@@ -350,13 +350,49 @@
   margin-bottom: 26px;
 }
 
+.eyebrow-container {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.greeting-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #ebf6f0;
+  color: #0f6b61;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 11px;
+  border-radius: 14px;
+  border: 1px solid #d0e7da;
+}
+
+.greeting-pill strong {
+  color: #0b5048;
+}
+
+.greeting-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.eyebrow-dot {
+  color: #9cb0a2;
+  font-size: 13px;
+  line-height: 1;
+}
+
 .eyebrow {
   color: var(--teal);
   letter-spacing: 1px;
   text-transform: uppercase;
   font-weight: 800;
   font-size: 11px;
-  margin: 0 0 6px;
+  margin: 0;
 }
 
 .page-heading h1 {
@@ -614,6 +650,62 @@
 
 .table-wrap {
   overflow-x: auto;
+}
+
+/* FIXED HEIGHT WORK SESSIONS LEDGER TABLE WITH STICKY HEADERS & VERTICAL SCROLL */
+.ledger-table-wrap {
+  max-height: 535px; /* displays ~10 rows at a time in fixed viewport */
+  overflow-y: auto;
+  overflow-x: auto;
+  position: relative;
+  scrollbar-width: thin;
+}
+
+.ledger-table-wrap table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+}
+
+.ledger-table-wrap thead {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.ledger-table-wrap th {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #f6faf7;
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 3px rgba(15, 35, 25, 0.07);
+}
+
+.ledger-table-wrap td {
+  background: white;
+}
+
+.ledger-table-wrap tr:hover td {
+  background: #fbfdfb;
+}
+
+.ledger-table-wrap::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.ledger-table-wrap::-webkit-scrollbar-track {
+  background: #f1f6f2;
+}
+
+.ledger-table-wrap::-webkit-scrollbar-thumb {
+  background: #b5c7ba;
+  border-radius: 4px;
+}
+
+.ledger-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: #8fa595;
 }
 
 table {
@@ -3021,6 +3113,299 @@ td small {
     align-items: stretch;
   }
 }
+
+/* ==========================================================================
+   BILLS & INVOICES STYLES
+   ========================================================================== */
+
+.bills-view-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bills-policy-banner {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bills-policy-banner .policy-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #166534;
+}
+
+.bills-policy-banner p {
+  margin: 0;
+  font-size: 12.5px;
+  color: #1f3d2c;
+  line-height: 1.5;
+}
+
+.bills-kpi-grid {
+  margin-bottom: 0;
+}
+
+.bills-toolbar {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.bill-id-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #eef4f0;
+  color: #1d3a2d;
+  font-family: monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  border: 1px solid #d3e0d8;
+  letter-spacing: 0.3px;
+}
+
+.bill-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.bill-status-pill.fully-paid {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+
+.bill-status-pill.half-paid {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.bill-status-pill.unpaid {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.table-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: #f4f8f5;
+  border: 1px solid #d0ddd5;
+  color: #1f3a2d;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.table-action-btn:hover {
+  background: #0f6b61;
+  color: white;
+  border-color: #0f6b61;
+}
+
+/* Bill Detail Modal Styles */
+.bill-detail-modal {
+  max-width: 820px;
+  width: 95%;
+}
+
+.bill-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+@media (max-width: 768px) {
+  .bill-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.bill-meta-panel {
+  background: #f9fbf9;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bill-meta-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px dashed #e4ebe5;
+  padding-bottom: 8px;
+  font-size: 12px;
+}
+
+.bill-meta-field:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.bill-meta-field .label {
+  color: #6e7e73;
+  font-weight: 500;
+}
+
+.bill-meta-field .val {
+  font-weight: 600;
+  color: #1f2d24;
+}
+
+.bill-edit-panel {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bill-status-selector-group {
+  display: flex;
+  gap: 8px;
+}
+
+.bill-status-choice {
+  flex: 1;
+  padding: 8px;
+  border-radius: 7px;
+  border: 1.5px solid #dce4de;
+  background: #fbfdfb;
+  cursor: pointer;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #48584e;
+  transition: all 0.15s ease;
+}
+
+.bill-status-choice:hover:not(:disabled) {
+  border-color: #0f6b61;
+}
+
+.bill-status-choice.selected.unpaid {
+  background: #fee2e2;
+  border-color: #ef4444;
+  color: #991b1b;
+}
+
+.bill-status-choice.selected.half-paid {
+  background: #fef3c7;
+  border-color: #f59e0b;
+  color: #b45309;
+}
+
+.bill-status-choice.selected.fully-paid {
+  background: #dcfce7;
+  border-color: #10b981;
+  color: #166534;
+}
+
+.bill-status-choice:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.locked-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: #eef5f1;
+  color: #21533b;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid #cfe0d6;
+}
+
+/* ==========================================================================
+   TOPBAR USER BADGE & AVATAR
+   ========================================================================== */
+
+.topbar-user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 11px 4px 5px;
+  background: #f1f7f3;
+  border: 1px solid #d8e5dc;
+  border-radius: 20px;
+  cursor: default;
+}
+
+.user-avatar-circle {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  background: var(--teal);
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 11.5px;
+  letter-spacing: 0;
+  box-shadow: 0 1px 3px rgba(15, 107, 97, 0.25);
+}
+
+.topbar-user-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.user-fullname-text {
+  font-weight: 700;
+  font-size: 12px;
+  color: #172b20;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-role-subtext {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #64756b;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+@media (max-width: 768px) {
+  .topbar-user-info {
+    display: none;
+  }
+}
+
 
 
 
