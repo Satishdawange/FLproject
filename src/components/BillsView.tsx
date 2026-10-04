@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useRef, useEffect } from 'react'
 import {
   FileText,
   Search,
@@ -43,6 +43,22 @@ export const BillsView: React.FC<BillsViewProps> = ({
   const [selectedClient, setSelectedClient] = useState<string>('All clients')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedBillForModal, setSelectedBillForModal] = useState<BillItem | null>(null)
+
+  // Export Menu Popover State
+  const [showExportMenu, setShowExportMenu] = useState(false)
+  const exportMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false)
+      }
+    }
+    if (showExportMenu) {
+      document.addEventListener('mousedown', handleOutsideClick)
+      return () => document.removeEventListener('mousedown', handleOutsideClick)
+    }
+  }, [showExportMenu])
 
   // Extract unique clients
   const availableClients = useMemo(() => {
@@ -356,15 +372,37 @@ export const BillsView: React.FC<BillsViewProps> = ({
           </div>
 
           {/* Export Menu */}
-          <div className="export-menu">
-            <button className="secondary-btn" title="Export filtered bills register">
+          <div
+            className="export-menu"
+            ref={exportMenuRef}
+            onMouseEnter={() => setShowExportMenu(true)}
+            onMouseLeave={() => setShowExportMenu(false)}
+          >
+            <button
+              type="button"
+              className="secondary-btn"
+              title="Click or hover to export bills register"
+              onClick={() => setShowExportMenu((prev) => !prev)}
+            >
               <Download size={14} /> Export Register
             </button>
-            <div className="export-options">
-              <button onClick={handleExportBillsExcel}>
+            <div className={`export-options ${showExportMenu ? 'show' : ''}`}>
+              <button
+                type="button"
+                onClick={() => {
+                  handleExportBillsExcel()
+                  setShowExportMenu(false)
+                }}
+              >
                 <Upload size={13} /> Excel Spreadsheet (.xlsx)
               </button>
-              <button onClick={handleExportFilteredBillsPdf}>
+              <button
+                type="button"
+                onClick={() => {
+                  handleExportFilteredBillsPdf()
+                  setShowExportMenu(false)
+                }}
+              >
                 <FileText size={13} /> PDF Report (.pdf)
               </button>
             </div>

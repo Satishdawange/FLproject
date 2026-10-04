@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import {
   CalendarDays,
   CalendarRange,
@@ -193,6 +193,22 @@ export default function App() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [showSheetModal, setShowSheetModal] = useState(false)
   const [showChallanModal, setShowChallanModal] = useState(false)
+
+  // Export Menu Popover State
+  const [showExportMenu, setShowExportMenu] = useState(false)
+  const exportMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setShowExportMenu(false)
+      }
+    }
+    if (showExportMenu) {
+      document.addEventListener('mousedown', handleOutsideClick)
+      return () => document.removeEventListener('mousedown', handleOutsideClick)
+    }
+  }, [showExportMenu])
 
 
   // Async Status
@@ -1583,16 +1599,38 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="export-menu">
-                    <button className="secondary-btn">
+                  <div
+                    className="export-menu"
+                    ref={exportMenuRef}
+                    onMouseEnter={() => setShowExportMenu(true)}
+                    onMouseLeave={() => setShowExportMenu(false)}
+                  >
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => setShowExportMenu((prev) => !prev)}
+                      title="Click or hover to export sessions"
+                    >
                       <Download size={15} /> Export
                     </button>
-                    <div className="export-options">
-                      <button onClick={handleExportExcel}>
+                    <div className={`export-options ${showExportMenu ? 'show' : ''}`}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleExportExcel()
+                          setShowExportMenu(false)
+                        }}
+                      >
                         <Upload size={14} /> Excel Spreadsheet (.xlsx)
                       </button>
-                      <button onClick={handleExportPdf}>
-                        <FileText size={14} /> PDF Report
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleExportPdf()
+                          setShowExportMenu(false)
+                        }}
+                      >
+                        <FileText size={14} /> PDF Report (.pdf)
                       </button>
                     </div>
                   </div>
