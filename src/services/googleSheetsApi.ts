@@ -1,4 +1,4 @@
-import type { AuthUser, SessionEntry, BillItem, UserAccount } from '../types'
+import type { AuthUser, SessionEntry, BillItem, UserAccount, AppNotification, PaymentRequest } from '../types'
 import { formatBillingPeriod } from '../utils/calculations'
 
 
@@ -12,6 +12,7 @@ export interface ApiResponse<T = unknown> {
   users?: UserAccount[]
   entries?: SessionEntry[]
   bills?: BillItem[]
+  notifications?: AppNotification[]
   count?: number
   billId?: string
   data?: T
@@ -136,22 +137,66 @@ export const googleSheetsApi = {
   },
 
   /**
-   * Updates status, payment amount, date, and notes for an existing bill
+   * Updates status, payment amount, date, notes, assignedTo and paymentRequest for an existing bill
    */
   async updateBill(
     url: string,
     billUpdate: {
       billId: string
-      status: string
+      status?: string
       paidAmount?: number | string
       paidOn?: string
       notes?: string
       assignedTo?: string
+      paymentRequest?: PaymentRequest | null
     }
   ): Promise<ApiResponse> {
     return callGoogleScript(url, {
       action: 'updateBill',
       ...billUpdate,
+    })
+  },
+
+  /**
+   * Fetches active notifications from Google Sheets
+   */
+  async getNotifications(url: string, username?: string): Promise<ApiResponse<AppNotification[]>> {
+    return callGoogleScript<AppNotification[]>(url, {
+      action: 'getNotifications',
+      username,
+    })
+  },
+
+  /**
+   * Appends a new notification to the 'Notifications' tab
+   */
+  async addNotification(url: string, notification: AppNotification): Promise<ApiResponse> {
+    return callGoogleScript(url, {
+      action: 'addNotification',
+      ...notification,
+    })
+  },
+
+  /**
+   * Updates a notification status or message
+   */
+  async updateNotification(
+    url: string,
+    update: { id: string; status?: string; message?: string }
+  ): Promise<ApiResponse> {
+    return callGoogleScript(url, {
+      action: 'updateNotification',
+      ...update,
+    })
+  },
+
+  /**
+   * Deletes a notification from the 'Notifications' tab
+   */
+  async deleteNotification(url: string, id: string): Promise<ApiResponse> {
+    return callGoogleScript(url, {
+      action: 'deleteNotification',
+      id,
     })
   },
 }

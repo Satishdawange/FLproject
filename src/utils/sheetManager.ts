@@ -1,4 +1,4 @@
-import type { SessionEntry, SheetItem, BillItem, UserAccount } from '../types'
+import type { SessionEntry, SheetItem, BillItem, UserAccount, AppNotification } from '../types'
 import { formatBillingPeriod } from './calculations'
 
 export const DEFAULT_SHEET_URL =
@@ -372,4 +372,40 @@ export function saveSheetUsersCache(url: string, users: UserAccount[]): void {
     // Ignore
   }
 }
+
+/**
+ * Loads notifications cached for a specific Google Sheet URL
+ */
+export function loadSheetNotificationsCache(url: string): AppNotification[] {
+  try {
+    const key = `fl_notifications_cache_${getUrlStorageKey(url)}`
+    const raw = localStorage.getItem(key)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed
+    }
+    const gen = localStorage.getItem('fl_notifications_cache')
+    if (gen) {
+      const parsed = JSON.parse(gen)
+      if (Array.isArray(parsed)) return parsed
+    }
+  } catch {
+    // Ignore
+  }
+  return []
+}
+
+/**
+ * Saves notifications cache for a specific Google Sheet URL
+ */
+export function saveSheetNotificationsCache(url: string, notifs: AppNotification[]): void {
+  try {
+    const key = `fl_notifications_cache_${getUrlStorageKey(url)}`
+    localStorage.setItem(key, JSON.stringify(notifs))
+    localStorage.setItem('fl_notifications_cache', JSON.stringify(notifs))
+  } catch {
+    // Ignore
+  }
+}
+
 

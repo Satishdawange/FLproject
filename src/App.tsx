@@ -25,6 +25,7 @@ import {
   BarChart3,
   Receipt,
   Percent,
+  Bell,
 } from 'lucide-react'
 
 import * as XLSX from 'xlsx'
@@ -32,11 +33,12 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
 import './App.css'
-import type { AuthUser, SessionEntry, SheetConfig, SheetItem, BillItem, UserAccount } from './types'
+import type { AuthUser, SessionEntry, SheetConfig, SheetItem, BillItem, UserAccount, AppNotification, PaymentRequest, BillPaymentStatus } from './types'
 
 import {
   formatMinutes,
   formatRupees,
+  formatBillingPeriod,
   groupSessionsByDay,
   groupSessionsByWeek,
   groupSessionsByMonth,
@@ -50,11 +52,14 @@ import {
   saveSheetBillsCache,
   loadSheetUsersCache,
   saveSheetUsersCache,
+  loadSheetNotificationsCache,
+  saveSheetNotificationsCache,
   DEFAULT_SHEET_USERS,
   addCustomSheetUrl,
   removeCustomSheetUrl,
   cacheSheetName,
 } from './utils/sheetManager'
+import { notificationService } from './utils/notificationService'
 import { googleSheetsApi } from './services/googleSheetsApi'
 import { LoginModal } from './components/LoginModal'
 import { GoogleSheetsModal } from './components/GoogleSheetsModal'
@@ -65,6 +70,7 @@ import { WeeklyBreakdownView } from './components/WeeklyBreakdownView'
 import { MonthlyBreakdownView } from './components/MonthlyBreakdownView'
 import { AnalyticsView } from './components/AnalyticsView'
 import { BillsView } from './components/BillsView'
+import { NotificationDrawer } from './components/NotificationDrawer'
 
 
 
@@ -267,6 +273,19 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<string | null>(null)
   const [savingEntry, setSavingEntry] = useState(false)
 
+  // Notifications & Payment Request Drawer State
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
+    const initialUrl = getDefaultSheetUrl()
+    try {
+      const savedUrl = localStorage.getItem('fl_active_sheet_url') || initialUrl
+      return loadSheetNotificationsCache(savedUrl)
+    } catch {
+      return []
+    }
+  })
+  const [showNotificationDrawer, setShowNotificationDrawer] = useState(false)
+  const [selectedBillIdToOpen, setSelectedBillIdToOpen] = useState<string | null>(null)
+
   // Save entries to localStorage cache for a specific sheet URL
   const saveEntriesCache = (newEntries: SessionEntry[], urlToUse = activeSheetUrl) => {
     const pureEntries = (newEntries || []).filter((e) => {
@@ -281,6 +300,12 @@ export default function App() {
   const saveBillsCache = (newBills: BillItem[], urlToUse = activeSheetUrl) => {
     setBills(newBills)
     saveSheetBillsCache(urlToUse, newBills)
+  }
+
+  // Save notifications to localStorage cache for a specific sheet URL
+  const saveNotificationsCache = (newNotifs: AppNotification[], urlToUse = activeSheetUrl) => {
+    setNotifications(newNotifs)
+    saveSheetNotificationsCache(urlToUse, newNotifs)
   }
 
   // Handle Sheet Config Save
@@ -301,12 +326,13 @@ export default function App() {
       setSyncStatus('Fetching records & bills from Google Sheet...')
 
       try {
-        // Fetch connection ping, entries, bills, and registered users concurrently
-        const [pingRes, res, billsRes, usersRes] = await Promise.all([
+        // Fetch connection ping, entries, bills, registered users, and notifications concurrently
+        const [pingRes, res, billsRes, usersRes, notifsRes] = await Promise.all([
           googleSheetsApi.testConnection(targetUrl).catch(() => null),
           googleSheetsApi.fetchEntries(targetUrl),
           googleSheetsApi.getBills(targetUrl).catch(() => ({ success: false, bills: [] })),
           googleSheetsApi.getUsers(targetUrl).catch(() => ({ success: false, users: [] })),
+          googleSheetsApi.getNotifications(targetUrl).catch(() => ({ success: false, notifications: [] })),
         ])
 
         const liveTitle = pingRes?.sheetName || res.sheetName
@@ -318,6 +344,10 @@ export default function App() {
         if (usersRes && usersRes.success && Array.isArray(usersRes.users) && usersRes.users.length > 0) {
           setAvailableUsers(usersRes.users)
           saveSheetUsersCache(targetUrl, usersRes.users)
+        }
+
+        if (notifsRes && notifsRes.success && Array.isArray(notifsRes.notifications)) {
+          saveNotificationsCache(notifsRes.notifications, targetUrl)
         }
 
         if (res.success && Array.isArray(res.entries)) {
@@ -371,13 +401,15 @@ export default function App() {
     setSheetConfig(updatedConfig)
     localStorage.setItem('fl_sheet_config', JSON.stringify(updatedConfig))
 
-    // 1. Immediately display cached entries, bills, and users for this sheet (zero delay)
+    // 1. Immediately display cached entries, bills, users, and notifications for this sheet (zero delay)
     const cached = loadSheetEntriesCache(newUrl)
     setEntries(cached)
     const cachedBills = loadSheetBillsCache(newUrl)
     setBills(cachedBills)
     const cachedUsers = loadSheetUsersCache(newUrl)
     setAvailableUsers(cachedUsers)
+    const cachedNotifs = loadSheetNotificationsCache(newUrl)
+    setNotifications(cachedNotifs)
 
     // 2. Fetch fresh entries & bills from the selected sheet
     handleSyncWithGoogleSheets(newUrl)
@@ -422,12 +454,314 @@ export default function App() {
     return true
   }
 
-  // Initial sync when connected and user is logged in
+  // Handle customer request to change payment status
+  const handleCustomerPaymentRequest = async (request: PaymentRequest): Promise<boolean> => {
+    const targetBill = bills.find((b) => b.billId === request.billId)
+    if (!targetBill) return false
+
+    const updatedBill: BillItem = {
+      ...targetBill,
+      paymentRequest: request,
+    }
+
+    // 1. Update local bills state and cache immediately
+    const updatedBills = bills.map((b) => (b.billId === targetBill.billId ? updatedBill : b))
+    saveBillsCache(updatedBills, activeSheetUrl)
+
+    // 2. Sync bill update and notification to Google Sheets
+    if (activeSheetUrl && sheetConfig.isConnected) {
+      try {
+        await googleSheetsApi.updateBill(activeSheetUrl, {
+          billId: targetBill.billId,
+          paymentRequest: request,
+        })
+
+        await googleSheetsApi.addNotification(activeSheetUrl, {
+          id: `NOTIF-${Date.now()}`,
+          type: 'payment_request',
+          title: `Payment Approval Request for ${targetBill.billId}`,
+          message: `${request.customerName || request.customerUsername} requested to mark as ${request.requestedStatus} (${formatRupees(request.paidAmount)}).`,
+          billId: targetBill.billId,
+          recipientUsername: 'admin',
+          createdAt: request.submittedAt,
+          status: 'active',
+          paymentRequest: request,
+        }).catch(() => null)
+      } catch (err) {
+        console.error('Failed to sync payment request to Google Sheets:', err)
+      }
+    }
+
+    // 3. Trigger alert & chime
+    notificationService.sendNotification('Payment Status Update Requested', {
+      body: `Request to mark ${request.billId} as ${request.requestedStatus} has been submitted to admin.`,
+    })
+
+    return true
+  }
+
+  // Handle Admin accepting payment request
+  const handleAcceptPaymentRequest = async (bill: BillItem): Promise<void> => {
+    const req = bill.paymentRequest
+    if (!req) return
+
+    const newStatus: BillPaymentStatus = req.requestedStatus
+    const newPaidAmount = req.requestedStatus === 'Fully Paid' ? bill.netAmount : req.paidAmount
+    const newPaidOn = req.paymentDate || new Date().toISOString().slice(0, 10)
+    const verificationNote = req.description
+      ? `${bill.notes || ''} [Verified Payment: ${req.description}]`.trim()
+      : bill.notes
+
+    const updatedBill: BillItem = {
+      ...bill,
+      status: newStatus,
+      paidAmount: newPaidAmount,
+      paidOn: newPaidOn,
+      notes: verificationNote,
+      paymentRequest: {
+        ...req,
+        status: 'accepted',
+      },
+    }
+
+    // 1. Update bill locally & cache
+    const updatedBills = bills.map((b) => (b.billId === bill.billId ? updatedBill : b))
+    saveBillsCache(updatedBills, activeSheetUrl)
+
+    // 2. Sync to Google Sheets
+    if (activeSheetUrl && sheetConfig.isConnected) {
+      try {
+        await googleSheetsApi.updateBill(activeSheetUrl, {
+          billId: bill.billId,
+          status: newStatus,
+          paidAmount: newPaidAmount,
+          paidOn: newPaidOn,
+          notes: verificationNote,
+          assignedTo: bill.assignedTo,
+          paymentRequest: {
+            ...req,
+            status: 'accepted',
+          },
+        })
+      } catch (err) {
+        console.error('Failed to update accepted bill in sheet:', err)
+      }
+    }
+
+    // 3. Audio & browser alert
+    notificationService.sendNotification('Payment Request Accepted', {
+      body: `Bill ${bill.billId} updated to ${newStatus} (${formatRupees(newPaidAmount)}).`,
+    })
+  }
+
+  // Handle Admin rejecting payment request
+  const handleRejectPaymentRequest = async (bill: BillItem): Promise<void> => {
+    const req = bill.paymentRequest
+    if (!req) return
+
+    const updatedBill: BillItem = {
+      ...bill,
+      paymentRequest: {
+        ...req,
+        status: 'rejected',
+      },
+    }
+
+    // 1. Update bill locally & cache
+    const updatedBills = bills.map((b) => (b.billId === bill.billId ? updatedBill : b))
+    saveBillsCache(updatedBills, activeSheetUrl)
+
+    // 2. Sync to Google Sheets
+    if (activeSheetUrl && sheetConfig.isConnected) {
+      try {
+        await googleSheetsApi.updateBill(activeSheetUrl, {
+          billId: bill.billId,
+          paymentRequest: {
+            ...req,
+            status: 'rejected',
+          },
+        })
+      } catch (err) {
+        console.error('Failed to update rejected bill in sheet:', err)
+      }
+    }
+
+    // 3. Audio & browser alert
+    notificationService.sendNotification('Payment Request Rejected', {
+      body: `Payment request for ${bill.billId} was rejected. Customer has been alerted to review.`,
+    })
+  }
+
+  // Dynamic notifications computation for the active user
+  const activeNotifications = useMemo(() => {
+    if (!currentUser) return []
+
+    const notifs: AppNotification[] = []
+
+    if (isAdmin) {
+      // 1. For Admin: All bills that have a pending payment request from customers
+      bills.forEach((b) => {
+        if (b.paymentRequest && b.paymentRequest.status === 'pending') {
+          notifs.push({
+            id: `notif-req-${b.billId}-${b.paymentRequest.submittedAt}`,
+            type: 'payment_request',
+            title: `Payment Approval Request for ${b.billId}`,
+            message: `${b.paymentRequest.customerName || b.paymentRequest.customerUsername} requested to mark as ${b.paymentRequest.requestedStatus} (${formatRupees(b.paymentRequest.paidAmount)}).`,
+            billId: b.billId,
+            recipientUsername: 'admin',
+            createdAt: b.paymentRequest.submittedAt || new Date().toISOString(),
+            status: 'active',
+            paymentRequest: b.paymentRequest,
+          })
+        }
+      })
+
+      // Standalone notifications targeted to admin
+      notifications.forEach((n) => {
+        if (
+          n.recipientUsername === 'admin' &&
+          n.status === 'active' &&
+          !notifs.some((existing) => existing.billId === n.billId && existing.type === n.type)
+        ) {
+          notifs.push(n)
+        }
+      })
+    } else {
+      // 2. For Customer: All bills assigned to this customer where status !== 'Fully Paid'
+      const myBills = bills.filter((b) => isAssignedToCurrentCustomer(b, currentUser))
+
+      myBills.forEach((b) => {
+        if (b.status === 'Fully Paid') return
+
+        const req = b.paymentRequest
+
+        if (req && req.status === 'pending') {
+          // Verification in progress
+          notifs.push({
+            id: `notif-cust-pending-${b.billId}`,
+            type: 'bill_pending',
+            title: `Verification In Progress: ${b.billId}`,
+            message: `Your request to mark ${b.billId} as ${req.requestedStatus} (${formatRupees(req.paidAmount)}) is awaiting admin approval.`,
+            billId: b.billId,
+            recipientUsername: currentUser.username,
+            createdAt: req.submittedAt || new Date().toISOString(),
+            status: 'active',
+            paymentRequest: req,
+          })
+        } else if (req && req.status === 'rejected') {
+          // Previous request was rejected
+          notifs.push({
+            id: `notif-cust-rejected-${b.billId}`,
+            type: 'request_rejected',
+            title: `Payment Request Rejected: ${b.billId}`,
+            message: `Your previous payment request for ${b.billId} was rejected by admin. Please review payment details and resubmit.`,
+            billId: b.billId,
+            recipientUsername: currentUser.username,
+            createdAt: req.submittedAt || new Date().toISOString(),
+            status: 'active',
+            paymentRequest: {
+              ...req,
+              totalAmount: b.netAmount,
+              remainingAmount: Math.max(0, b.netAmount - (b.paidAmount || 0)),
+            },
+          })
+        } else if (b.status === 'Half Paid') {
+          // Half paid, remaining balance due
+          const rem = Math.max(0, b.netAmount - (b.paidAmount || 0))
+          notifs.push({
+            id: `notif-cust-half-${b.billId}`,
+            type: 'bill_half_pending',
+            title: `Partial Balance Due: ${b.billId}`,
+            message: `Bill ${b.billId} is Half Paid. Remaining balance of ${formatRupees(rem)} is due.`,
+            billId: b.billId,
+            recipientUsername: currentUser.username,
+            createdAt: b.createdOn || new Date().toISOString(),
+            status: 'active',
+            paymentRequest: {
+              id: `req-${b.billId}`,
+              billId: b.billId,
+              client: b.client,
+              project: b.project,
+              selectedPeriod: b.selectedPeriod,
+              totalAmount: b.netAmount,
+              customerUsername: currentUser.username,
+              requestedStatus: 'Fully Paid',
+              paidAmount: rem,
+              remainingAmount: rem,
+              paymentDate: new Date().toISOString().slice(0, 10),
+              description: '',
+              submittedAt: b.createdOn || new Date().toISOString(),
+              status: 'pending',
+            },
+          })
+        } else {
+          // Unpaid bill
+          notifs.push({
+            id: `notif-cust-unpaid-${b.billId}`,
+            type: 'bill_pending',
+            title: `Pending Bill Payment: ${b.billId}`,
+            message: `Bill ${b.billId} for ${formatBillingPeriod(b.selectedPeriod)} (${formatRupees(b.netAmount)}) is unpaid. Please submit payment status update.`,
+            billId: b.billId,
+            recipientUsername: currentUser.username,
+            createdAt: b.createdOn || new Date().toISOString(),
+            status: 'active',
+            paymentRequest: {
+              id: `req-${b.billId}`,
+              billId: b.billId,
+              client: b.client,
+              project: b.project,
+              selectedPeriod: b.selectedPeriod,
+              totalAmount: b.netAmount,
+              customerUsername: currentUser.username,
+              requestedStatus: 'Fully Paid',
+              paidAmount: b.netAmount,
+              remainingAmount: b.netAmount,
+              paymentDate: new Date().toISOString().slice(0, 10),
+              description: '',
+              submittedAt: b.createdOn || new Date().toISOString(),
+              status: 'pending',
+            },
+          })
+        }
+      })
+
+      // Include standalone notifications targeted to this user
+      notifications.forEach((n) => {
+        const u = (currentUser.username || '').toLowerCase()
+        if (
+          (n.recipientUsername.toLowerCase() === u || n.recipientUsername === '*') &&
+          n.status === 'active' &&
+          !notifs.some((existing) => existing.id === n.id || (existing.billId === n.billId && existing.type === n.type))
+        ) {
+          notifs.push(n)
+        }
+      })
+    }
+
+    return notifs
+  }, [bills, currentUser, isAdmin, notifications, isAssignedToCurrentCustomer])
+
+  // Auto-refresh fresh data from Google Sheets whenever portal opens / user logs in
+  const hasAutoSyncedOnOpenRef = useRef(false)
   useEffect(() => {
-    if (currentUser && activeSheetUrl && sheetConfig.isConnected && entries.length === 0) {
+    if (currentUser && activeSheetUrl && sheetConfig.isConnected && !hasAutoSyncedOnOpenRef.current) {
+      hasAutoSyncedOnOpenRef.current = true
       handleSyncWithGoogleSheets(activeSheetUrl)
     }
-  }, [currentUser, activeSheetUrl, sheetConfig.isConnected, entries.length, handleSyncWithGoogleSheets])
+  }, [currentUser, activeSheetUrl, sheetConfig.isConnected, handleSyncWithGoogleSheets])
+
+  // Auto-refresh on window focus (if > 30 seconds since last sync)
+  useEffect(() => {
+    let lastFocusSync = Date.now()
+    const handleFocus = () => {
+      if (Date.now() - lastFocusSync > 30000 && currentUser && activeSheetUrl && sheetConfig.isConnected) {
+        lastFocusSync = Date.now()
+        handleSyncWithGoogleSheets(activeSheetUrl)
+      }
+    }
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
+  }, [currentUser, activeSheetUrl, sheetConfig.isConnected, handleSyncWithGoogleSheets])
 
 
   // Login handler - persists credentials across sessions until explicit logout or password change
@@ -1344,6 +1678,24 @@ export default function App() {
               </div>
             )}
 
+            {/* Notification Bell Button with Red Dot / Counter */}
+            <button
+              type="button"
+              className={`icon-btn notif-bell-btn ${activeNotifications.length > 0 ? 'has-alerts' : ''}`}
+              onClick={() => setShowNotificationDrawer((prev) => !prev)}
+              title={
+                activeNotifications.length > 0
+                  ? `${activeNotifications.length} active notification(s) — click to review`
+                  : 'Notifications Center (No new alerts)'
+              }
+              aria-label="Open notifications"
+            >
+              <Bell size={16} />
+              {activeNotifications.length > 0 && (
+                <span className="bell-red-dot" />
+              )}
+            </button>
+
             {/* Logged in User Profile Pill in Topbar */}
             <div
               className="topbar-user-badge"
@@ -1720,9 +2072,14 @@ export default function App() {
               viewMode="all"
               sheetName={sheetConfig.sheetName}
               onUpdateBill={handleUpdateBill}
+              onRequestPaymentStatusChange={handleCustomerPaymentRequest}
+              onAcceptRequest={handleAcceptPaymentRequest}
+              onRejectRequest={handleRejectPaymentRequest}
               onOpenCreateChallan={() => setShowChallanModal(true)}
               onRefreshBills={() => handleSyncWithGoogleSheets(activeSheetUrl)}
               isSyncing={syncing}
+              selectedBillIdToOpen={selectedBillIdToOpen}
+              onClearSelectedBillIdToOpen={() => setSelectedBillIdToOpen(null)}
             />
           )}
 
@@ -1733,8 +2090,11 @@ export default function App() {
               currentUser={currentUser}
               viewMode="my-bills"
               sheetName={sheetConfig.sheetName}
+              onRequestPaymentStatusChange={handleCustomerPaymentRequest}
               onRefreshBills={() => handleSyncWithGoogleSheets(activeSheetUrl)}
               isSyncing={syncing}
+              selectedBillIdToOpen={selectedBillIdToOpen}
+              onClearSelectedBillIdToOpen={() => setSelectedBillIdToOpen(null)}
             />
           )}
 
@@ -1747,6 +2107,8 @@ export default function App() {
               sheetName={sheetConfig.sheetName}
               onRefreshBills={() => handleSyncWithGoogleSheets(activeSheetUrl)}
               isSyncing={syncing}
+              selectedBillIdToOpen={selectedBillIdToOpen}
+              onClearSelectedBillIdToOpen={() => setSelectedBillIdToOpen(null)}
             />
           )}
 
@@ -2006,6 +2368,38 @@ export default function App() {
           onSyncBill={handleSyncBill}
         />
       )}
+
+      {/* Notification Center Slide-over Drawer */}
+      <NotificationDrawer
+        isOpen={showNotificationDrawer}
+        onClose={() => setShowNotificationDrawer(false)}
+        notifications={activeNotifications}
+        currentUser={currentUser}
+        isAdmin={isAdmin}
+        onAcceptRequest={async (notif) => {
+          const target = bills.find((b) => b.billId === notif.billId)
+          if (target) {
+            await handleAcceptPaymentRequest(target)
+          }
+        }}
+        onRejectRequest={async (notif) => {
+          const target = bills.find((b) => b.billId === notif.billId)
+          if (target) {
+            await handleRejectPaymentRequest(target)
+          }
+        }}
+        onOpenBill={(billId) => {
+          setSelectedBillIdToOpen(billId)
+          if (isAdmin) {
+            setActiveView('bills')
+          } else {
+            setActiveView('my-bills')
+          }
+        }}
+        onDismissNotification={(id) => {
+          saveNotificationsCache(notifications.filter((n) => n.id !== id))
+        }}
+      />
 
     </div>
   )

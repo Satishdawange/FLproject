@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Lock, User, KeyRound, AlertCircle, HelpCircle, ArrowLeft, ShieldAlert } from 'lucide-react'
+import { Lock, User, KeyRound, AlertCircle, HelpCircle, ArrowLeft, ShieldAlert, Eye, EyeOff } from 'lucide-react'
 import type { AuthUser, SheetConfig } from '../types'
 import { googleSheetsApi } from '../services/googleSheetsApi'
 
@@ -15,6 +15,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 }) => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showForgotPassword, setShowForgotPassword] = useState(false)
@@ -237,12 +238,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   <div className="input-with-icon">
                     <KeyRound size={16} />
                     <input
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
+                      className="has-toggle"
                       placeholder="Enter your password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       autoComplete="current-password"
                     />
+                    <button
+                      type="button"
+                      className="password-toggle-btn"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      title={showPassword ? 'Hide password' : 'Show password'}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
                   </div>
                 </div>
 

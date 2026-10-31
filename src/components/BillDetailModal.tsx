@@ -9,25 +9,32 @@ import {
   Receipt,
   ExternalLink,
   ShieldCheck,
+  Send,
+  Check,
+  Clock,
 } from 'lucide-react'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import type { BillItem, BillPaymentStatus } from '../types'
+import type { BillItem, BillPaymentStatus, PaymentRequest, AuthUser } from '../types'
 import { formatMinutes, formatRupees, formatBillingPeriod } from '../utils/calculations'
 import { generateInvoicePdf } from './InvoiceDetailModal'
 
 interface BillDetailModalProps {
   bill: BillItem
   isCustomerView?: boolean
+  currentUser?: AuthUser | null
   onClose: () => void
   onSaveBill?: (updatedBill: BillItem) => Promise<boolean>
+  onRequestPaymentStatusChange?: (request: PaymentRequest) => Promise<boolean>
+  onAcceptRequest?: (bill: BillItem) => Promise<void>
+  onRejectRequest?: (bill: BillItem) => Promise<void>
   onOpenInvoice?: () => void
 }
 
 /**
  * Generates and downloads official Bill Statement PDF
  */
-export function generateBillStatementPdf(bill: BillItem) {
+export function generateBillStatementPdf(bill: BillItem, isCustomerView = false) {
   const doc = new jsPDF()
 
   // Header banner (210mm wide)
@@ -89,8 +96,8 @@ export function generateBillStatementPdf(bill: BillItem) {
       ['Gross Amount (Pre-Discount)', `Rs. ${Math.round(bill.grossAmount).toLocaleString('en-IN')}`, 'Financial'],
       ['Discount Amount Deducted', `-Rs. ${Math.round(bill.discountMoney).toLocaleString('en-IN')}`, 'Financial'],
       ['Net Amount Payable', `Rs. ${Math.round(bill.netAmount).toLocaleString('en-IN')}`, 'Final Due'],
-      ['Current Payment Status', bill.status, 'Status'],
-      ['Paid Amount to Date', `Rs. ${Math.round(bill.paidAmount || 0).toLocaleString('en-IN')}`, 'Collections'],
+      [isCustomerView ? 'Your Payment Status' : 'Current Payment Status', bill.status, 'Status'],
+      [isCustomerView ? 'Amount Paid by You' : 'Paid Amount to Date', `Rs. ${Math.round(bill.paidAmount || 0).toLocaleString('en-IN')}`, isCustomerView ? 'Paid' : 'Collections'],
       ['Payment Date', bill.paidOn || 'Pending', 'Date'],
       ['Assigned Customer', bill.assignedTo || 'Unassigned', 'Account'],
     ],
@@ -127,8 +134,12 @@ export function generateBillStatementPdf(bill: BillItem) {
 export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   bill,
   isCustomerView = false,
+  currentUser,
   onClose,
   onSaveBill,
+  onRequestPaymentStatusChange,
+  onAcceptRequest,
+  onRejectRequest,
   onOpenInvoice,
 }) => {
   const todayIso = new Date().toISOString().slice(0, 10)
@@ -144,8 +155,109 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   const [saving, setSaving] = useState(false)
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; error?: boolean } | null>(null)
 
+  // Customer Payment Request state
+  const [reqStatus, setReqStatus] = useState<'Fully Paid' | 'Half Paid'>('Fully Paid')
+  const [reqPaidAmount, setReqPaidAmount] = useState<number>(() => {
+    if (bill.status === 'Half Paid') {
+      const alreadyPaid = Number(bill.paidAmount || 0)
+      return Math.max(0, bill.netAmount - alreadyPaid)
+    }
+    return bill.netAmount
+  })
+  const [reqPaymentDate, setReqPaymentDate] = useState<string>(todayIso)
+  const [reqRemainingDate, setReqRemainingDate] = useState<string>('')
+  const [reqDescription, setReqDescription] = useState<string>('')
+  const [submittingReq, setSubmittingReq] = useState(false)
+  const [reqSuccess, setReqSuccess] = useState(false)
+  const [adminActionLoading, setAdminActionLoading] = useState(false)
+
   const hasInvoice = status === 'Half Paid' || status === 'Fully Paid'
   const invoiceNo = `INV-${bill.billId.replace('BILL-', '')}`
+
+  // Customer submit request handler
+  const handleSubmitCustomerRequest = async () => {
+    if (!onRequestPaymentStatusChange) return
+
+    if (!reqDescription.trim()) {
+      setFeedbackMsg({ text: 'Please enter payment details / UTR reference number.', error: true })
+      return
+    }
+
+    if (reqStatus === 'Half Paid') {
+      if (!reqPaidAmount || reqPaidAmount <= 0) {
+        setFeedbackMsg({ text: 'Please enter the amount paid.', error: true })
+        return
+      }
+      if (reqPaidAmount >= bill.netAmount) {
+        setFeedbackMsg({ text: 'Paid amount equals or exceeds total amount. Please select Mark as Fully Paid instead.', error: true })
+        return
+      }
+    }
+
+    setSubmittingReq(true)
+    setFeedbackMsg(null)
+
+    const paidAmt = reqStatus === 'Fully Paid' ? bill.netAmount : Number(reqPaidAmount)
+    const remainingAmt = Math.max(0, bill.netAmount - paidAmt)
+
+    const requestObj: PaymentRequest = {
+      id: `REQ-${Date.now()}`,
+      billId: bill.billId,
+      client: bill.client,
+      project: bill.project,
+      selectedPeriod: bill.selectedPeriod,
+      totalAmount: bill.netAmount,
+      customerUsername: currentUser?.username || bill.assignedTo || 'customer',
+      customerName: currentUser?.fullName || currentUser?.name || currentUser?.username || 'Customer',
+      requestedStatus: reqStatus,
+      paidAmount: paidAmt,
+      remainingAmount: remainingAmt,
+      paymentDate: reqPaymentDate || todayIso,
+      remainingPaymentDate: reqStatus === 'Half Paid' ? reqRemainingDate : undefined,
+      description: reqDescription.trim(),
+      submittedAt: new Date().toISOString(),
+      status: 'pending',
+    }
+
+    try {
+      const ok = await onRequestPaymentStatusChange(requestObj)
+      if (ok) {
+        setReqSuccess(true)
+        setFeedbackMsg({ text: 'Payment status update request submitted! Administrator has been notified.' })
+      } else {
+        setFeedbackMsg({ text: 'Failed to submit request. Please try again.', error: true })
+      }
+    } finally {
+      setSubmittingReq(false)
+    }
+  }
+
+  // Handle Admin quick accept/reject from modal
+  const handleAdminAccept = async () => {
+    if (!onAcceptRequest) return
+    setAdminActionLoading(true)
+    try {
+      await onAcceptRequest(bill)
+      setStatus(bill.paymentRequest?.requestedStatus || 'Fully Paid')
+      if (bill.paymentRequest?.paidAmount) {
+        setPaidAmount(bill.paymentRequest.paidAmount)
+      }
+      setFeedbackMsg({ text: 'Customer payment request accepted and bill updated!' })
+    } finally {
+      setAdminActionLoading(false)
+    }
+  }
+
+  const handleAdminReject = async () => {
+    if (!onRejectRequest) return
+    setAdminActionLoading(true)
+    try {
+      await onRejectRequest(bill)
+      setFeedbackMsg({ text: 'Customer payment request rejected. Customer has been alerted.', error: true })
+    } finally {
+      setAdminActionLoading(false)
+    }
+  }
 
   // Handle status change
   const handleStatusChange = (newStatus: BillPaymentStatus) => {
@@ -417,11 +529,262 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
             </div>
           </div>
 
+          {/* ADMIN: PENDING CUSTOMER PAYMENT REQUEST REVIEW BANNER */}
+          {!isCustomerView && bill.paymentRequest && bill.paymentRequest.status === 'pending' && (
+            <div className="admin-pending-req-banner">
+              <div className="req-banner-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Clock size={16} color="#b45309" />
+                  <strong style={{ color: '#92400e', fontSize: '13.5px' }}>
+                    Customer Payment Status Update Request Awaiting Your Action
+                  </strong>
+                </div>
+                <span className="req-submitted-time">
+                  Submitted: {bill.paymentRequest.submittedAt?.slice(0, 16)}
+                </span>
+              </div>
+
+              <div className="req-banner-body">
+                <div className="req-banner-metric">
+                  <span className="banner-label">Customer:</span>
+                  <span className="banner-val">{bill.paymentRequest.customerName || bill.paymentRequest.customerUsername}</span>
+                </div>
+                <div className="req-banner-metric">
+                  <span className="banner-label">Requested Status:</span>
+                  <span className={`status-badge-inline ${bill.paymentRequest.requestedStatus === 'Fully Paid' ? 'full' : 'half'}`}>
+                    {bill.paymentRequest.requestedStatus}
+                  </span>
+                </div>
+                <div className="req-banner-metric">
+                  <span className="banner-label">Amount Paid:</span>
+                  <span className="banner-val highlight">{formatRupees(bill.paymentRequest.paidAmount)}</span>
+                </div>
+                <div className="req-banner-metric">
+                  <span className="banner-label">Total Bill Amount:</span>
+                  <span className="banner-val">{formatRupees(bill.netAmount)}</span>
+                </div>
+                {bill.paymentRequest.requestedStatus === 'Half Paid' && (
+                  <div className="req-banner-metric">
+                    <span className="banner-label">Remaining Due:</span>
+                    <span className="banner-val warning">{formatRupees(bill.paymentRequest.remainingAmount)}</span>
+                  </div>
+                )}
+                <div className="req-banner-metric">
+                  <span className="banner-label">Payment Date:</span>
+                  <span className="banner-val">{bill.paymentRequest.paymentDate}</span>
+                </div>
+                {bill.paymentRequest.remainingPaymentDate && (
+                  <div className="req-banner-metric">
+                    <span className="banner-label">Expected Balance Date:</span>
+                    <span className="banner-val">{bill.paymentRequest.remainingPaymentDate}</span>
+                  </div>
+                )}
+              </div>
+
+              {bill.paymentRequest.description && (
+                <div className="req-banner-note">
+                  <span className="note-label">Customer Note / UTR Reference:</span>
+                  <p className="note-text">"{bill.paymentRequest.description}"</p>
+                </div>
+              )}
+
+              <div className="req-banner-actions">
+                <button
+                  type="button"
+                  className="req-accept-btn"
+                  onClick={handleAdminAccept}
+                  disabled={adminActionLoading}
+                >
+                  <Check size={14} />
+                  {adminActionLoading ? 'Updating...' : `Accept & Mark as ${bill.paymentRequest.requestedStatus}`}
+                </button>
+                <button
+                  type="button"
+                  className="req-reject-btn"
+                  onClick={handleAdminReject}
+                  disabled={adminActionLoading}
+                >
+                  <X size={14} />
+                  {adminActionLoading ? 'Processing...' : 'Reject Request'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* CUSTOMER: REQUEST PAYMENT STATUS CHANGE HIGHLIGHTED CARD */}
+          {isCustomerView && bill.status !== 'Fully Paid' && (
+            <div className="customer-request-card">
+              <div className="customer-request-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Sparkles size={16} color="#0f6b61" />
+                  <h4>Request Payment Status Update</h4>
+                </div>
+                <span className="request-subtext">
+                  Notify admin after paying to mark this bill as fully or partially paid
+                </span>
+              </div>
+
+              {bill.paymentRequest && bill.paymentRequest.status === 'pending' && !reqSuccess ? (
+                <div className="customer-pending-state-box">
+                  <Clock size={16} color="#b45309" />
+                  <div>
+                    <strong>Verification In Progress with Admin</strong>
+                    <p>
+                      You requested to update status to <b>{bill.paymentRequest.requestedStatus}</b> (
+                      {formatRupees(bill.paymentRequest.paidAmount)}) on {bill.paymentRequest.paymentDate}.
+                      Admin has been notified.
+                    </p>
+                    {bill.paymentRequest.description && (
+                      <small style={{ color: '#78350f', display: 'block', marginTop: '4px' }}>
+                        Reference: "{bill.paymentRequest.description}"
+                      </small>
+                    )}
+                  </div>
+                </div>
+              ) : reqSuccess ? (
+                <div className="customer-success-state-box">
+                  <Check size={16} color="#15803d" />
+                  <div>
+                    <strong>Request Successfully Submitted!</strong>
+                    <p>
+                      Your request to update this bill has been sent to administrator. Once accepted,
+                      the bill status will update automatically.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="customer-request-form">
+                  <div className="request-options-row">
+                    <label
+                      className={`request-option-pill ${reqStatus === 'Fully Paid' ? 'active' : ''}`}
+                    >
+                      <input
+                        type="radio"
+                        name="billReqStatus"
+                        value="Fully Paid"
+                        checked={reqStatus === 'Fully Paid'}
+                        onChange={() => {
+                          setReqStatus('Fully Paid')
+                          setReqPaidAmount(bill.netAmount)
+                        }}
+                      />
+                      <span>Mark as Fully Paid ({formatRupees(bill.netAmount)})</span>
+                    </label>
+
+                    <label
+                      className={`request-option-pill ${reqStatus === 'Half Paid' ? 'active' : ''}`}
+                    >
+                      <input
+                        type="radio"
+                        name="billReqStatus"
+                        value="Half Paid"
+                        checked={reqStatus === 'Half Paid'}
+                        onChange={() => {
+                          setReqStatus('Half Paid')
+                          setReqPaidAmount(Math.round(bill.netAmount / 2))
+                        }}
+                      />
+                      <span>Mark as Half Paid (Partial Payment)</span>
+                    </label>
+                  </div>
+
+                  <div className="bill-specs-grid" style={{ marginTop: '12px' }}>
+                    {reqStatus === 'Half Paid' && (
+                      <div className="spec-field">
+                        <label>Amount Paid by You (INR) *</label>
+                        <input
+                          type="number"
+                          value={reqPaidAmount || ''}
+                          onChange={(e) =>
+                            setReqPaidAmount(
+                              Math.min(bill.netAmount, Math.max(0, Number(e.target.value) || 0))
+                            )
+                          }
+                          className="editable-input"
+                          placeholder="Enter paid amount"
+                        />
+                      </div>
+                    )}
+
+                    {reqStatus === 'Half Paid' && (
+                      <div className="spec-field">
+                        <label>Remaining Balance Due (INR)</label>
+                        <input
+                          type="text"
+                          readOnly
+                          value={formatRupees(Math.max(0, bill.netAmount - reqPaidAmount))}
+                          className="readonly-input balance-due-input"
+                          style={{ color: '#b45309', fontWeight: 800 }}
+                        />
+                      </div>
+                    )}
+
+                    <div className="spec-field">
+                      <label>Date of Payment *</label>
+                      <input
+                        type="date"
+                        value={reqPaymentDate}
+                        onChange={(e) => setReqPaymentDate(e.target.value)}
+                        className="editable-input"
+                      />
+                    </div>
+
+                    {reqStatus === 'Half Paid' && (
+                      <div className="spec-field">
+                        <label>Expected Date of Remaining Payment</label>
+                        <input
+                          type="date"
+                          value={reqRemainingDate}
+                          onChange={(e) => setReqRemainingDate(e.target.value)}
+                          className="editable-input"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: '12px' }}>
+                    <label
+                      style={{
+                        display: 'block',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        color: '#34453a',
+                        marginBottom: '4px',
+                      }}
+                    >
+                      Payment Description &amp; Transaction Details (UTR / Ref No.) *:
+                    </label>
+                    <input
+                      type="text"
+                      value={reqDescription}
+                      onChange={(e) => setReqDescription(e.target.value)}
+                      placeholder="e.g. Paid ₹15,000 via UPI (UTR: 428901234567) or NetBanking on today"
+                      className="editable-input"
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="primary-btn submit-request-action-btn"
+                      onClick={handleSubmitCustomerRequest}
+                      disabled={submittingReq || !reqDescription.trim()}
+                    >
+                      <Send size={14} />
+                      <span>{submittingReq ? 'Submitting Request...' : 'Request to Update Payment Status'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* PAYMENT & SETTLEMENT SECTION */}
           <div className="bill-section-card payment-action-box">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
               <h4 style={{ margin: 0, fontSize: '12.5px', color: '#0f6b61', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Payment Status &amp; Settlement Details {isCustomerView && '(Verified by Admin)'}
+                Payment Status &amp; Settlement Details {isCustomerView ? '(Verified Record)' : ''}
               </h4>
               {isSettledLocked ? (
                 <span style={{ fontSize: '11px', color: '#7a887e', fontWeight: 600 }}>
@@ -436,54 +799,92 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
             </div>
 
             <div className="bill-specs-grid">
-              {/* Payment Status Dropdown */}
+              {/* Payment Status Dropdown / Display */}
               <div className="spec-field">
-                <label>Payment Status</label>
-                <select
-                  value={status}
-                  onChange={(e) => handleStatusChange(e.target.value as BillPaymentStatus)}
-                  disabled={!isEditable || saving}
-                  className="editable-select"
-                  style={{ fontWeight: 700 }}
-                >
-                  <option value="Unpaid">Unpaid (Pending Collection)</option>
-                  <option value="Half Paid">Half Paid (Partial Settlement)</option>
-                  <option value="Fully Paid">Fully Paid (Settled in Full)</option>
-                </select>
+                <label>{isCustomerView ? 'Current Payment Status' : 'Payment Status'}</label>
+                {isCustomerView ? (
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      status === 'Fully Paid'
+                        ? 'Fully Paid (Settled in Full)'
+                        : status === 'Half Paid'
+                        ? 'Half Paid (Partial Payment)'
+                        : 'Unpaid (Payment Pending)'
+                    }
+                    className="readonly-input"
+                    style={{
+                      fontWeight: 700,
+                      color: status === 'Fully Paid' ? '#166534' : status === 'Half Paid' ? '#b45309' : '#b2432a',
+                    }}
+                  />
+                ) : (
+                  <select
+                    value={status}
+                    onChange={(e) => handleStatusChange(e.target.value as BillPaymentStatus)}
+                    disabled={!isEditable || saving}
+                    className="editable-select"
+                    style={{ fontWeight: 700 }}
+                  >
+                    <option value="Unpaid">Unpaid (Pending Payment)</option>
+                    <option value="Half Paid">Half Paid (Partial Payment)</option>
+                    <option value="Fully Paid">Fully Paid (Settled in Full)</option>
+                  </select>
+                )}
               </div>
 
-              {/* Paid On Date Input */}
+              {/* Paid On Date Input / Display */}
               <div className="spec-field">
                 <label>
-                  Payment Received Date {status === 'Fully Paid' && '(Latest Settled Date)'}
+                  {isCustomerView ? 'Payment Date' : 'Payment Received Date'} {status === 'Fully Paid' && '(Latest Settled Date)'}
                 </label>
-                <input
-                  type="date"
-                  value={paidOn}
-                  onChange={(e) => setPaidOn(e.target.value)}
-                  disabled={!isEditable || status === 'Unpaid' || saving}
-                  className="editable-input"
-                />
+                {isCustomerView ? (
+                  <input
+                    type="text"
+                    readOnly
+                    value={paidOn || 'Pending'}
+                    className="readonly-input"
+                  />
+                ) : (
+                  <input
+                    type="date"
+                    value={paidOn}
+                    onChange={(e) => setPaidOn(e.target.value)}
+                    disabled={!isEditable || status === 'Unpaid' || saving}
+                    className="editable-input"
+                  />
+                )}
               </div>
 
-              {/* Paid Amount Input */}
+              {/* Paid Amount Input / Display */}
               <div className="spec-field">
-                <label>Paid Amount (INR)</label>
+                <label>{isCustomerView ? 'Amount Paid by You (INR)' : 'Paid Amount (INR)'}</label>
                 <div style={{ position: 'relative' }}>
-                  <input
-                    type="number"
-                    value={status === 'Fully Paid' ? bill.netAmount : paidAmount}
-                    onChange={(e) => setPaidAmount(Number(e.target.value) || 0)}
-                    disabled={!isEditable || status !== 'Half Paid' || saving}
-                    className="editable-input"
-                    placeholder="Enter received amount"
-                  />
+                  {isCustomerView ? (
+                    <input
+                      type="text"
+                      readOnly
+                      value={formatRupees(status === 'Fully Paid' ? bill.netAmount : paidAmount)}
+                      className="readonly-input"
+                      style={{ fontWeight: 700, color: '#0f6b61' }}
+                    />
+                  ) : (
+                    <input
+                      type="number"
+                      value={status === 'Fully Paid' ? bill.netAmount : paidAmount}
+                      onChange={(e) => setPaidAmount(Number(e.target.value) || 0)}
+                      disabled={!isEditable || status !== 'Half Paid' || saving}
+                      className="editable-input"
+                      placeholder="Enter paid amount"
+                    />
+                  )}
                 </div>
               </div>
 
               {/* Remaining Balance Due */}
               <div className="spec-field">
-                <label>Remaining Balance Due (INR)</label>
+                <label>{isCustomerView ? 'Remaining Balance Due' : 'Remaining Balance Due (INR)'}</label>
                 <input
                   type="text"
                   readOnly
@@ -502,15 +903,25 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
               <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#4a5b50', marginBottom: '4px' }}>
                 Payment Notes / Transaction Remarks:
               </label>
-              <input
-                type="text"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                disabled={!isEditable || saving}
-                placeholder="e.g. Bank transfer, UTR number, partial invoice notes..."
-                className="editable-input"
-                style={{ width: '100%' }}
-              />
+              {isCustomerView ? (
+                <input
+                  type="text"
+                  readOnly
+                  value={notes || 'None'}
+                  className="readonly-input"
+                  style={{ width: '100%' }}
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  disabled={!isEditable || saving}
+                  placeholder="e.g. Bank transfer, UTR number, partial invoice notes..."
+                  className="editable-input"
+                  style={{ width: '100%' }}
+                />
+              )}
             </div>
           </div>
         </div>

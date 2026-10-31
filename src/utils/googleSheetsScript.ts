@@ -82,6 +82,14 @@ function handleRequest(params) {
       output = handleUpdateBill(ss, params);
     } else if (action === 'getUsers') {
       output = handleGetUsers(ss);
+    } else if (action === 'getNotifications') {
+      output = handleGetNotifications(ss, params.username);
+    } else if (action === 'addNotification') {
+      output = handleAddNotification(ss, params);
+    } else if (action === 'updateNotification') {
+      output = handleUpdateNotification(ss, params);
+    } else if (action === 'deleteNotification') {
+      output = handleDeleteNotification(ss, params.id || params.notifId);
     } else if (action === 'init') {
       initSheet();
       output = { success: true, message: 'Initialized sheet structure.' };
@@ -343,9 +351,9 @@ function handleGetEntries(ss, targetMonth) {
     var sheet = sheets[s];
     var name = sheet.getName().trim();
 
-    // Skip internal metadata and non-session tabs (Users, Bills, Invoices)
+    // Skip internal metadata and non-session tabs (Users, Bills, Invoices, Notifications)
     var lowerName = name.toLowerCase();
-    if (lowerName === 'users' || lowerName === 'bills' || lowerName === 'invoices') continue;
+    if (lowerName === 'users' || lowerName === 'bills' || lowerName === 'invoices' || lowerName === 'notifications') continue;
 
     // If targetMonth is provided and this is a month tab for a different month, skip
     var isMonthPattern = /^[0-9]{4}-[0-9]{1,2}$/.test(name);
@@ -492,7 +500,8 @@ function getOrCreateBillsSheet(ss) {
       'Paid Amount (₹)',
       'Paid On',
       'Notes',
-      'Assigned To'
+      'Assigned To',
+      'Payment Request'
     ];
     sheet.appendRow(headers);
     var headerRange = sheet.getRange(1, 1, 1, headers.length);
@@ -505,12 +514,18 @@ function getOrCreateBillsSheet(ss) {
     sheet.getRange('J:L').setNumberFormat('₹#,##0.00');
     sheet.getRange('N:N').setNumberFormat('₹#,##0.00');
   } else {
-    // Migration: ensure column 17 'Assigned To' exists in pre-existing Bills sheet
+    // Migration: ensure columns 17 & 18 exist in pre-existing Bills sheet
     if (sheet.getLastColumn() < 17) {
       sheet.getRange(1, 17).setValue('Assigned To');
       sheet.getRange(1, 17).setBackground('#0f6b61');
       sheet.getRange(1, 17).setFontColor('#ffffff');
       sheet.getRange(1, 17).setFontWeight('bold');
+    }
+    if (sheet.getLastColumn() < 18) {
+      sheet.getRange(1, 18).setValue('Payment Request');
+      sheet.getRange(1, 18).setBackground('#0f6b61');
+      sheet.getRange(1, 18).setFontColor('#ffffff');
+      sheet.getRange(1, 18).setFontWeight('bold');
     }
   }
   return sheet;
@@ -580,6 +595,13 @@ function handleGetBills(ss) {
     var row = data[i];
     if (!row[0]) continue;
 
+    var reqData = null;
+    if (row[17]) {
+      try {
+        reqData = typeof row[17] === 'string' ? JSON.parse(row[17]) : row[17];
+      } catch (e) {}
+    }
+
     bills.push({
       billId: String(row[0] || ''),
       createdOn: String(row[1] || ''),
@@ -597,7 +619,8 @@ function handleGetBills(ss) {
       paidAmount: row[13] !== '' && row[13] !== null ? Number(row[13]) : 0,
       paidOn: String(row[14] || ''),
       notes: String(row[15] || ''),
-      assignedTo: String(row[16] || '')
+      assignedTo: String(row[16] || ''),
+      paymentRequest: reqData
     });
   }
 
@@ -639,7 +662,8 @@ function handleAddBill(ss, data) {
     data.paidAmount !== undefined && data.paidAmount !== '' ? Number(data.paidAmount) : '',
     data.paidOn || '',
     data.notes || '',
-    data.assignedTo || ''
+    data.assignedTo || '',
+    data.paymentRequest ? (typeof data.paymentRequest === 'object' ? JSON.stringify(data.paymentRequest) : String(data.paymentRequest)) : ''
   ];
 
   sheet.appendRow(row);
@@ -697,10 +721,129 @@ function handleUpdateBill(ss, data) {
     sheet.getRange(foundRow, 17).setValue(data.assignedTo);
   }
 
+  // Update Payment Request (col 18 / R)
+  if (data.paymentRequest !== undefined) {
+    var prVal = '';
+    if (data.paymentRequest) {
+      prVal = typeof data.paymentRequest === 'object' ? JSON.stringify(data.paymentRequest) : String(data.paymentRequest);
+    }
+    sheet.getRange(foundRow, 18).setValue(prVal);
+  }
+
   return {
     success: true,
     message: 'Bill ' + targetId + ' updated successfully in Bills tab'
   };
+}
+
+function getOrCreateNotificationsSheet(ss) {
+  var sheet = ss.getSheetByName('Notifications');
+  if (!sheet) {
+    sheet = ss.insertSheet('Notifications');
+    var headers = [
+      'Notification ID',
+      'Type',
+      'Recipient',
+      'Bill ID',
+      'Title',
+      'Message',
+      'Created At',
+      'Status',
+      'Payment Request Data'
+    ];
+    sheet.appendRow(headers);
+    var headerRange = sheet.getRange(1, 1, 1, headers.length);
+    headerRange.setBackground('#0f6b61');
+    headerRange.setFontColor('#ffffff');
+    headerRange.setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function handleGetNotifications(ss, username) {
+  var sheet = getOrCreateNotificationsSheet(ss);
+  var data = sheet.getDataRange().getValues();
+  var notifs = [];
+  if (data.length <= 1) {
+    return { success: true, notifications: [] };
+  }
+  var u = String(username || '').trim().toLowerCase();
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[0]) continue;
+    var recipient = String(row[2] || '').trim().toLowerCase();
+    if (u && recipient && recipient !== u && recipient !== '*' && recipient !== 'all') {
+      if (!(u === 'admin' && recipient === 'admin')) {
+        continue;
+      }
+    }
+    var reqData = null;
+    if (row[8]) {
+      try {
+        reqData = typeof row[8] === 'string' ? JSON.parse(row[8]) : row[8];
+      } catch (e) {}
+    }
+    notifs.push({
+      id: String(row[0] || ''),
+      type: String(row[1] || 'bill_pending'),
+      recipientUsername: String(row[2] || ''),
+      billId: String(row[3] || ''),
+      title: String(row[4] || ''),
+      message: String(row[5] || ''),
+      createdAt: String(row[6] || ''),
+      status: String(row[7] || 'active'),
+      paymentRequest: reqData
+    });
+  }
+  return { success: true, notifications: notifs };
+}
+
+function handleAddNotification(ss, data) {
+  var sheet = getOrCreateNotificationsSheet(ss);
+  var notifId = String(data.id || ('NOTIF-' + new Date().getTime()));
+  var row = [
+    notifId,
+    data.type || 'bill_pending',
+    data.recipientUsername || 'admin',
+    data.billId || '',
+    data.title || '',
+    data.message || '',
+    data.createdAt || new Date().toISOString(),
+    data.status || 'active',
+    data.paymentRequest ? (typeof data.paymentRequest === 'object' ? JSON.stringify(data.paymentRequest) : String(data.paymentRequest)) : ''
+  ];
+  sheet.appendRow(row);
+  return { success: true, id: notifId };
+}
+
+function handleUpdateNotification(ss, data) {
+  var sheet = getOrCreateNotificationsSheet(ss);
+  var notifId = String(data.id || '').trim();
+  if (!notifId) return { success: false, message: 'Missing notification id' };
+  var values = sheet.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]).trim() === notifId) {
+      if (data.status) sheet.getRange(i + 1, 8).setValue(data.status);
+      if (data.message) sheet.getRange(i + 1, 6).setValue(data.message);
+      return { success: true };
+    }
+  }
+  return { success: false, message: 'Notification not found' };
+}
+
+function handleDeleteNotification(ss, notifId) {
+  var sheet = getOrCreateNotificationsSheet(ss);
+  var targetId = String(notifId || '').trim();
+  if (!targetId) return { success: false, message: 'Missing notification id' };
+  var values = sheet.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]).trim() === targetId) {
+      sheet.deleteRow(i + 1);
+      return { success: true };
+    }
+  }
+  return { success: true, message: 'Notification already removed' };
 }
 `
 

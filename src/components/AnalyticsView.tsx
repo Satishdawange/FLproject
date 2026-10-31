@@ -547,7 +547,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         {isAdmin ? (
           <div className="analytics-kpi-card">
             <div className="kpi-top">
-              <span>Total Revenue (Net)</span>
+              <span>{isAdmin ? 'Total Revenue (Net)' : 'Total Invoiced Amount'}</span>
               <IndianRupee size={16} color="#0f6b61" />
             </div>
             <strong style={{ color: '#0f6b61' }}>{formatRupees(totals.netMoney)}</strong>
@@ -563,7 +563,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 }}
                 title="Pre-October 2026 earnings are 100% settled. October 2026+ verified via Bills sheet."
               >
-                Paid: {formatRupees(settlementMetrics.totalSettledPaid)}
+                {isAdmin ? 'Paid: ' : 'Paid by You: '}{formatRupees(settlementMetrics.totalSettledPaid)}
               </span>
               {settlementMetrics.totalPendingDue > 0 && (
                 <span
@@ -577,7 +577,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   }}
                   title="October 2026+ challan bills awaiting settlement"
                 >
-                  Due: {formatRupees(settlementMetrics.totalPendingDue)}
+                  {isAdmin ? 'Due: ' : 'Pending Due: '}{formatRupees(settlementMetrics.totalPendingDue)}
                 </span>
               )}
             </div>

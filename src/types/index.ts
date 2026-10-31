@@ -95,6 +95,45 @@ export interface SheetConfig {
 
 export type BillPaymentStatus = 'Unpaid' | 'Half Paid' | 'Fully Paid'
 
+export interface PaymentRequest {
+  id: string
+  billId: string
+  client: string
+  project: string
+  selectedPeriod: string
+  totalAmount: number
+  customerUsername: string
+  customerName?: string
+  requestedStatus: 'Fully Paid' | 'Half Paid'
+  paidAmount: number
+  remainingAmount: number
+  paymentDate: string
+  remainingPaymentDate?: string
+  description: string
+  submittedAt: string
+  status: 'pending' | 'accepted' | 'rejected'
+}
+
+export type NotificationType =
+  | 'bill_pending'
+  | 'bill_half_pending'
+  | 'payment_request'
+  | 'request_rejected'
+  | 'request_accepted'
+
+export interface AppNotification {
+  id: string
+  type: NotificationType
+  title: string
+  message: string
+  billId: string
+  recipientUsername: string // 'admin' or customer username
+  createdAt: string
+  read?: boolean
+  status: 'active' | 'resolved' | 'dismissed'
+  paymentRequest?: PaymentRequest
+}
+
 export interface BillItem {
   billId: string
   createdOn: string // e.g. "2026-10-04 15:30"
@@ -113,5 +152,6 @@ export interface BillItem {
   paidOn?: string
   notes?: string
   assignedTo?: string // Customer account assigned to this bill
+  paymentRequest?: PaymentRequest // Pending or latest payment status change request
 }
 
