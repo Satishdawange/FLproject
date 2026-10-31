@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import {
   X,
   Bell,
@@ -44,6 +44,15 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
     notificationService.getPermission()
   )
 
+  // Sort notifications Z to A (newest/most recent first based on createdAt timestamp)
+  const sortedNotifications = useMemo(() => {
+    return [...notifications].sort((a, b) => {
+      const timeA = new Date(a.createdAt || 0).getTime()
+      const timeB = new Date(b.createdAt || 0).getTime()
+      return timeB - timeA
+    })
+  }, [notifications])
+
   if (!isOpen) return null
 
   const handleEnableBrowserNotifications = async () => {
@@ -64,6 +73,9 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
     setProcessingId(notif.id)
     try {
       await onAcceptRequest(notif)
+    } catch (err) {
+      console.error('Accept request error:', err)
+      alert('Failed to accept request. Please try again.')
     } finally {
       setProcessingId(null)
     }
@@ -73,6 +85,9 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
     setProcessingId(notif.id)
     try {
       await onRejectRequest(notif)
+    } catch (err) {
+      console.error('Reject request error:', err)
+      alert('Failed to reject request. Please try again.')
     } finally {
       setProcessingId(null)
     }
@@ -157,7 +172,7 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
             </div>
           ) : (
             <div className="notif-items-list">
-              {notifications.map((notif) => {
+              {sortedNotifications.map((notif) => {
                 const req = notif.paymentRequest
                 const isProcessing = processingId === notif.id
 
@@ -259,7 +274,9 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
                 const isHalfPending = notif.type === 'bill_half_pending'
                 const isRejected = notif.type === 'request_rejected'
                 const isAccepted = notif.type === 'request_accepted'
-                const isPendingVerification = req?.status === 'pending'
+                const isPendingVerification =
+                  notif.type === 'payment_request' ||
+                  Boolean(req && req.status === 'pending' && req.description?.trim())
 
                 return (
                   <div

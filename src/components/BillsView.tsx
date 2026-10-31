@@ -69,7 +69,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
   // Handle external open trigger from notification drawer
   useEffect(() => {
     if (selectedBillIdToOpen) {
-      const match = bills.find((b) => b.billId === selectedBillIdToOpen)
+      const cleanTarget = selectedBillIdToOpen.trim().toLowerCase()
+      const match = bills.find((b) => b.billId?.trim().toLowerCase() === cleanTarget)
       if (match) {
         setSelectedBillForModal(match)
       }
@@ -194,8 +195,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
     const title = isMyInvoicesMode
       ? 'SATISH SERVICENOW SUPPORT - MY OFFICIAL INVOICES REGISTER'
       : isMyBillsMode
-      ? 'SATISH SERVICENOW SUPPORT - MY BILLS & STATEMENTS REGISTER'
-      : 'SATISH SERVICENOW SUPPORT - BILLS & RECEIVABLES REGISTER'
+        ? 'SATISH SERVICENOW SUPPORT - MY BILLS & STATEMENTS REGISTER'
+        : 'SATISH SERVICENOW SUPPORT - BILLS & RECEIVABLES REGISTER'
 
     // Header styling (297mm wide landscape, usable 269mm from 14 to 283)
     doc.setFillColor(15, 107, 97)
@@ -279,30 +280,30 @@ export const BillsView: React.FC<BillsViewProps> = ({
       styles: { fontSize: 7, cellPadding: 2, overflow: 'linebreak' },
       columnStyles: isCustomer
         ? {
-            0: { cellWidth: 25 },
-            1: { cellWidth: 22 },
-            2: { cellWidth: 26 },
-            3: { cellWidth: 30 },
-            4: { cellWidth: 30 },
-            5: { cellWidth: 28 },
-            6: { cellWidth: 26, halign: 'right' },
-            7: { cellWidth: 24 },
-            8: { cellWidth: 26, halign: 'right' },
-            9: { cellWidth: 32, halign: 'right' },
-          }
+          0: { cellWidth: 25 },
+          1: { cellWidth: 22 },
+          2: { cellWidth: 26 },
+          3: { cellWidth: 30 },
+          4: { cellWidth: 30 },
+          5: { cellWidth: 28 },
+          6: { cellWidth: 26, halign: 'right' },
+          7: { cellWidth: 24 },
+          8: { cellWidth: 26, halign: 'right' },
+          9: { cellWidth: 32, halign: 'right' },
+        }
         : {
-            0: { cellWidth: 24 },
-            1: { cellWidth: 22 },
-            2: { cellWidth: 24 },
-            3: { cellWidth: 26 },
-            4: { cellWidth: 26 },
-            5: { cellWidth: 22 },
-            6: { cellWidth: 26 },
-            7: { cellWidth: 24, halign: 'right' },
-            8: { cellWidth: 22 },
-            9: { cellWidth: 24, halign: 'right' },
-            10: { cellWidth: 29, halign: 'right' },
-          },
+          0: { cellWidth: 24 },
+          1: { cellWidth: 22 },
+          2: { cellWidth: 24 },
+          3: { cellWidth: 26 },
+          4: { cellWidth: 26 },
+          5: { cellWidth: 22 },
+          6: { cellWidth: 26 },
+          7: { cellWidth: 24, halign: 'right' },
+          8: { cellWidth: 22 },
+          9: { cellWidth: 24, halign: 'right' },
+          10: { cellWidth: 29, halign: 'right' },
+        },
     })
 
     const safeName = isMyInvoicesMode ? 'my-invoices' : isMyBillsMode ? 'my-bills' : 'bills-register'
@@ -425,8 +426,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
               {isMyInvoicesMode
                 ? 'Amount Paid & Receipted'
                 : isCustomer
-                ? 'Amount Paid by You'
-                : 'Collected / Settled'}
+                  ? 'Amount Paid by You'
+                  : 'Collected / Settled'}
             </span>
             <span className="card-icon green">
               <CheckCircle2 size={16} />
@@ -444,8 +445,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
               {isMyInvoicesMode
                 ? 'Remaining Balance Due'
                 : isCustomer
-                ? 'Remaining Balance Due'
-                : 'Pending Receivables'}
+                  ? 'Remaining Balance Due'
+                  : 'Pending Receivables'}
             </span>
             <span className="card-icon orange">
               <Clock size={16} />
@@ -721,9 +722,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
                       </td>
                       <td>
                         <span
-                          className={`bill-status-pill ${
-                            isFullyPaid ? 'fully-paid' : isHalfPaid ? 'half-paid' : 'unpaid'
-                          }`}
+                          className={`bill-status-pill ${isFullyPaid ? 'fully-paid' : isHalfPaid ? 'half-paid' : 'unpaid'
+                            }`}
                         >
                           {isFullyPaid && <CheckCircle2 size={12} />}
                           {isHalfPaid && <AlertTriangle size={12} />}
@@ -835,16 +835,17 @@ export const BillsView: React.FC<BillsViewProps> = ({
                     <td>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-start' }}>
                         <span
-                          className={`bill-status-pill ${
-                            isFullyPaid ? 'fully-paid' : isHalfPaid ? 'half-paid' : 'unpaid'
-                          }`}
+                          className={`bill-status-pill ${isFullyPaid ? 'fully-paid' : isHalfPaid ? 'half-paid' : 'unpaid'
+                            }`}
                         >
                           {isFullyPaid && <CheckCircle2 size={12} />}
                           {isHalfPaid && <AlertTriangle size={12} />}
                           {isUnpaid && <Clock size={12} />}
                           {bill.status}
                         </span>
-                        {bill.paymentRequest && bill.paymentRequest.status === 'pending' && (
+                        {bill.paymentRequest &&
+                          bill.paymentRequest.status === 'pending' &&
+                          Boolean(bill.paymentRequest.description?.trim()) && (
                           <span
                             className="pending-req-tag"
                             style={{
@@ -906,8 +907,8 @@ export const BillsView: React.FC<BillsViewProps> = ({
                             isAdmin
                               ? 'Open Bill Inspection Form & Update Status'
                               : !isFullyPaid
-                              ? 'Review Bill & Request Payment Status'
-                              : 'View Bill Statement Details'
+                                ? 'Review Bill & Request Payment Status'
+                                : 'View Bill Statement Details'
                           }
                           onClick={() => setSelectedBillForModal(bill)}
                         >
@@ -945,17 +946,17 @@ export const BillsView: React.FC<BillsViewProps> = ({
                 {isMyInvoicesMode
                   ? 'No Invoices Available Yet'
                   : isMyBillsMode
-                  ? 'No Bills Assigned'
-                  : 'No Bills Found'}
+                    ? 'No Bills Assigned'
+                    : 'No Bills Found'}
               </strong>
               <span>
                 {isMyInvoicesMode
                   ? 'Invoices become available once payment is recorded by the admin as Half Paid or Fully Paid. Any pending bills can be reviewed under "My Bills".'
                   : isMyBillsMode
-                  ? `There are currently no bills assigned to your user account (${currentUser?.fullName || currentUser?.username}). Contact your administrator if you need a statement.`
-                  : bills.length === 0
-                  ? 'No bills have been generated yet. Open "Create Challan" and click "Sync & Download PDF" to record your first bill in Google Sheets.'
-                  : 'No bills match your current filter criteria.'}
+                    ? `There are currently no bills assigned to your user account (${currentUser?.fullName || currentUser?.username}). Contact your administrator if you need a statement.`
+                    : bills.length === 0
+                      ? 'No bills have been generated yet. Open "Create Challan" and click "Sync & Download PDF" to record your first bill in Google Sheets.'
+                      : 'No bills match your current filter criteria.'}
               </span>
               {isAdmin && bills.length === 0 && onOpenCreateChallan && (
                 <button
@@ -1001,21 +1002,21 @@ export const BillsView: React.FC<BillsViewProps> = ({
           onOpenInvoice={
             selectedBillForModal.status === 'Half Paid' || selectedBillForModal.status === 'Fully Paid'
               ? () => {
-                  const b = selectedBillForModal
-                  setSelectedBillForModal(null)
-                  setSelectedBillForInvoiceModal(b)
-                }
+                const b = selectedBillForModal
+                setSelectedBillForModal(null)
+                setSelectedBillForInvoiceModal(b)
+              }
               : undefined
           }
           onSaveBill={
             isAdmin && onUpdateBill
               ? async (updated) => {
-                  const ok = await onUpdateBill(updated)
-                  if (ok) {
-                    setSelectedBillForModal(updated)
-                  }
-                  return ok
+                const ok = await onUpdateBill(updated)
+                if (ok) {
+                  setSelectedBillForModal(updated)
                 }
+                return ok
+              }
               : undefined
           }
         />

@@ -169,6 +169,7 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
   const [reqDescription, setReqDescription] = useState<string>('')
   const [submittingReq, setSubmittingReq] = useState(false)
   const [reqSuccess, setReqSuccess] = useState(false)
+  const [isEditingRequest, setIsEditingRequest] = useState(false)
   const [adminActionLoading, setAdminActionLoading] = useState(false)
 
   const hasInvoice = status === 'Half Paid' || status === 'Fully Paid'
@@ -624,12 +625,45 @@ export const BillDetailModal: React.FC<BillDetailModalProps> = ({
                 </span>
               </div>
 
-              {bill.paymentRequest && bill.paymentRequest.status === 'pending' && !reqSuccess ? (
+              {bill.paymentRequest &&
+              bill.paymentRequest.status === 'pending' &&
+              Boolean(bill.paymentRequest.description?.trim()) &&
+              !isEditingRequest &&
+              !reqSuccess ? (
                 <div className="customer-pending-state-box">
                   <Clock size={16} color="#b45309" />
-                  <div>
-                    <strong>Verification In Progress with Admin</strong>
-                    <p>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong>Verification In Progress with Admin</strong>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (bill.paymentRequest) {
+                            setReqStatus(bill.paymentRequest.requestedStatus || 'Fully Paid')
+                            setReqPaidAmount(bill.paymentRequest.paidAmount || bill.netAmount)
+                            setReqPaymentDate(bill.paymentRequest.paymentDate || todayIso)
+                            setReqDescription(bill.paymentRequest.description || '')
+                            if (bill.paymentRequest.remainingPaymentDate) {
+                              setReqRemainingDate(bill.paymentRequest.remainingPaymentDate)
+                            }
+                          }
+                          setIsEditingRequest(true)
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#0f6b61',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                          padding: 0,
+                        }}
+                      >
+                        Edit Request
+                      </button>
+                    </div>
+                    <p style={{ marginTop: '4px' }}>
                       You requested to update status to <b>{bill.paymentRequest.requestedStatus}</b> (
                       {formatRupees(bill.paymentRequest.paidAmount)}) on {bill.paymentRequest.paymentDate}.
                       Admin has been notified.

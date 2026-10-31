@@ -71,6 +71,7 @@ import { MonthlyBreakdownView } from './components/MonthlyBreakdownView'
 import { AnalyticsView } from './components/AnalyticsView'
 import { BillsView } from './components/BillsView'
 import { NotificationDrawer } from './components/NotificationDrawer'
+import { BillDetailModal } from './components/BillDetailModal'
 
 
 
@@ -134,12 +135,23 @@ export default function App() {
     }
   })
 
-  // Bills loaded from active sheet cache
+  // Bills loaded from active sheet cache (with sanitization for stale dummy requests)
   const [bills, setBills] = useState<BillItem[]>(() => {
     const initialUrl = getDefaultSheetUrl()
     try {
       const savedUrl = localStorage.getItem('fl_active_sheet_url') || initialUrl
-      return loadSheetBillsCache(savedUrl)
+      const raw = loadSheetBillsCache(savedUrl)
+      return (raw || []).map((b) => {
+        if (
+          b.paymentRequest &&
+          ((b.paymentRequest.id?.startsWith('req-') && !b.paymentRequest.description) ||
+            (b.paymentRequest.status === 'pending' && !b.paymentRequest.description?.trim()))
+        ) {
+          const { paymentRequest: _rem, ...clean } = b
+          return clean as BillItem
+        }
+        return b
+      })
     } catch {
       return []
     }
@@ -285,6 +297,7 @@ export default function App() {
   })
   const [showNotificationDrawer, setShowNotificationDrawer] = useState(false)
   const [selectedBillIdToOpen, setSelectedBillIdToOpen] = useState<string | null>(null)
+  const [activeModalBill, setActiveModalBill] = useState<BillItem | null>(null)
 
   // Save entries to localStorage cache for a specific sheet URL
   const saveEntriesCache = (newEntries: SessionEntry[], urlToUse = activeSheetUrl) => {
@@ -298,8 +311,19 @@ export default function App() {
 
   // Save bills to localStorage cache for a specific sheet URL
   const saveBillsCache = (newBills: BillItem[], urlToUse = activeSheetUrl) => {
-    setBills(newBills)
-    saveSheetBillsCache(urlToUse, newBills)
+    const cleaned = (newBills || []).map((b) => {
+      if (
+        b.paymentRequest &&
+        ((b.paymentRequest.id?.startsWith('req-') && !b.paymentRequest.description) ||
+          (b.paymentRequest.status === 'pending' && !b.paymentRequest.description?.trim()))
+      ) {
+        const { paymentRequest: _rem, ...clean } = b
+        return clean as BillItem
+      }
+      return b
+    })
+    setBills(cleaned)
+    saveSheetBillsCache(urlToUse, cleaned)
   }
 
   // Save notifications to localStorage cache for a specific sheet URL
@@ -500,96 +524,202 @@ export default function App() {
     return true
   }
 
-  // Handle Admin accepting payment request
-  const handleAcceptPaymentRequest = async (bill: BillItem): Promise<void> => {
-    const req = bill.paymentRequest
-    if (!req) return
+  // Handle Admin accepting payment request (from Side Drawer or Bill Modal)
+  const handleAcceptPaymentRequest = async (
+    targetOrNotif: BillItem | AppNotification
+  ): Promise<void> => {
+    const isNotif = 'recipientUsername' in targetOrNotif
+    const billId = targetOrNotif.billId
+    const cleanId = String(billId || '').trim().toLowerCase()
 
-    const newStatus: BillPaymentStatus = req.requestedStatus
-    const newPaidAmount = req.requestedStatus === 'Fully Paid' ? bill.netAmount : req.paidAmount
-    const newPaidOn = req.paymentDate || new Date().toISOString().slice(0, 10)
-    const verificationNote = req.description
-      ? `${bill.notes || ''} [Verified Payment: ${req.description}]`.trim()
-      : bill.notes
+    // Find bill in state
+    const bill =
+      bills.find((b) => String(b.billId || '').trim().toLowerCase() === cleanId) ||
+      (!isNotif ? (targetOrNotif as BillItem) : null)
 
-    const updatedBill: BillItem = {
-      ...bill,
-      status: newStatus,
-      paidAmount: newPaidAmount,
-      paidOn: newPaidOn,
-      notes: verificationNote,
-      paymentRequest: {
-        ...req,
-        status: 'accepted',
-      },
+    // Retrieve payment request details from either notification or bill
+    const req = (isNotif ? targetOrNotif.paymentRequest : null) || bill?.paymentRequest
+    if (!req) {
+      alert(`Could not find payment request details for bill ${billId}.`)
+      return
     }
 
-    // 1. Update bill locally & cache
-    const updatedBills = bills.map((b) => (b.billId === bill.billId ? updatedBill : b))
-    saveBillsCache(updatedBills, activeSheetUrl)
+    const newStatus: BillPaymentStatus = req.requestedStatus || 'Fully Paid'
+    const totalAmt = bill?.netAmount || req.totalAmount || req.paidAmount || 0
+    const newPaidAmount = newStatus === 'Fully Paid' ? totalAmt : req.paidAmount
+    const newPaidOn = req.paymentDate || new Date().toISOString().slice(0, 10)
+    const verificationNote = req.description
+      ? `${bill?.notes || ''} [Verified Payment: ${req.description}]`.trim()
+      : bill?.notes || ''
 
-    // 2. Sync to Google Sheets
+    const acceptedRequest: PaymentRequest = {
+      ...req,
+      status: 'accepted',
+    }
+
+    // 1. Update bill locally & in cache
+    let updatedBill: BillItem
+    if (bill) {
+      updatedBill = {
+        ...bill,
+        status: newStatus,
+        paidAmount: newPaidAmount,
+        paidOn: newPaidOn,
+        notes: verificationNote,
+        paymentRequest: acceptedRequest,
+      }
+      const updatedBills = bills.map((b) =>
+        String(b.billId || '').trim().toLowerCase() === cleanId ? updatedBill : b
+      )
+      saveBillsCache(updatedBills, activeSheetUrl)
+    }
+
+    // 2. Remove / resolve admin notification from notifications cache
+    const custUsername = req.customerUsername || bill?.assignedTo || 'customer'
+    const notifIdToResolve = isNotif ? targetOrNotif.id : null
+
+    // Add an approved confirmation notification for the customer
+    const customerApprovalNotif: AppNotification = {
+      id: `NOTIF-APP-${Date.now()}`,
+      type: 'request_accepted',
+      title: `Payment Verified: ${billId}`,
+      message: `Your payment of ${formatRupees(newPaidAmount)} for ${billId} has been verified and marked as ${newStatus}.`,
+      billId: billId,
+      recipientUsername: custUsername,
+      createdAt: new Date().toISOString(),
+      status: 'active',
+      paymentRequest: acceptedRequest,
+    }
+
+    const updatedNotifs = notifications
+      .filter(
+        (n) =>
+          n.id !== notifIdToResolve &&
+          !(
+            String(n.billId || '').trim().toLowerCase() === cleanId &&
+            n.type === 'payment_request'
+          )
+      )
+      .concat(customerApprovalNotif)
+
+    saveNotificationsCache(updatedNotifs, activeSheetUrl)
+
+    // 3. Audio & browser alert
+    notificationService.sendNotification('Payment Request Accepted', {
+      body: `Bill ${billId} updated to ${newStatus} (${formatRupees(newPaidAmount)}).`,
+    })
+
+    // 4. Sync to Google Sheets
     if (activeSheetUrl && sheetConfig.isConnected) {
       try {
         await googleSheetsApi.updateBill(activeSheetUrl, {
-          billId: bill.billId,
+          billId: billId,
           status: newStatus,
           paidAmount: newPaidAmount,
           paidOn: newPaidOn,
           notes: verificationNote,
-          assignedTo: bill.assignedTo,
-          paymentRequest: {
-            ...req,
-            status: 'accepted',
-          },
+          assignedTo: bill?.assignedTo,
+          paymentRequest: acceptedRequest,
         })
+
+        if (notifIdToResolve) {
+          await googleSheetsApi.deleteNotification(activeSheetUrl, notifIdToResolve)
+        }
+
+        await googleSheetsApi.addNotification(activeSheetUrl, customerApprovalNotif)
       } catch (err) {
-        console.error('Failed to update accepted bill in sheet:', err)
+        console.error('Failed to sync accepted bill to sheet:', err)
       }
     }
-
-    // 3. Audio & browser alert
-    notificationService.sendNotification('Payment Request Accepted', {
-      body: `Bill ${bill.billId} updated to ${newStatus} (${formatRupees(newPaidAmount)}).`,
-    })
   }
 
-  // Handle Admin rejecting payment request
-  const handleRejectPaymentRequest = async (bill: BillItem): Promise<void> => {
-    const req = bill.paymentRequest
-    if (!req) return
+  // Handle Admin rejecting payment request (from Side Drawer or Bill Modal)
+  const handleRejectPaymentRequest = async (
+    targetOrNotif: BillItem | AppNotification
+  ): Promise<void> => {
+    const isNotif = 'recipientUsername' in targetOrNotif
+    const billId = targetOrNotif.billId
+    const cleanId = String(billId || '').trim().toLowerCase()
 
-    const updatedBill: BillItem = {
-      ...bill,
-      paymentRequest: {
-        ...req,
-        status: 'rejected',
-      },
+    // Find bill in state
+    const bill =
+      bills.find((b) => String(b.billId || '').trim().toLowerCase() === cleanId) ||
+      (!isNotif ? (targetOrNotif as BillItem) : null)
+
+    const req = (isNotif ? targetOrNotif.paymentRequest : null) || bill?.paymentRequest
+    if (!req) {
+      alert(`Could not find payment request details for bill ${billId}.`)
+      return
     }
 
-    // 1. Update bill locally & cache
-    const updatedBills = bills.map((b) => (b.billId === bill.billId ? updatedBill : b))
-    saveBillsCache(updatedBills, activeSheetUrl)
+    const rejectedRequest: PaymentRequest = {
+      ...req,
+      status: 'rejected',
+    }
 
-    // 2. Sync to Google Sheets
-    if (activeSheetUrl && sheetConfig.isConnected) {
-      try {
-        await googleSheetsApi.updateBill(activeSheetUrl, {
-          billId: bill.billId,
-          paymentRequest: {
-            ...req,
-            status: 'rejected',
-          },
-        })
-      } catch (err) {
-        console.error('Failed to update rejected bill in sheet:', err)
+    // 1. Update bill locally & in cache
+    if (bill) {
+      const updatedBill: BillItem = {
+        ...bill,
+        paymentRequest: rejectedRequest,
       }
+      const updatedBills = bills.map((b) =>
+        String(b.billId || '').trim().toLowerCase() === cleanId ? updatedBill : b
+      )
+      saveBillsCache(updatedBills, activeSheetUrl)
     }
+
+    // 2. Remove admin notification and create customer rejection alert
+    const custUsername = req.customerUsername || bill?.assignedTo || 'customer'
+    const notifIdToResolve = isNotif ? targetOrNotif.id : null
+
+    const customerRejectionNotif: AppNotification = {
+      id: `NOTIF-REJ-${Date.now()}`,
+      type: 'request_rejected',
+      title: `Payment Request Rejected: ${billId}`,
+      message: `Your payment update for ${billId} was rejected by administrator. Please inspect details, verify payment, and submit again.`,
+      billId: billId,
+      recipientUsername: custUsername,
+      createdAt: new Date().toISOString(),
+      status: 'active',
+      paymentRequest: rejectedRequest,
+    }
+
+    const updatedNotifs = notifications
+      .filter(
+        (n) =>
+          n.id !== notifIdToResolve &&
+          !(
+            String(n.billId || '').trim().toLowerCase() === cleanId &&
+            n.type === 'payment_request'
+          )
+      )
+      .concat(customerRejectionNotif)
+
+    saveNotificationsCache(updatedNotifs, activeSheetUrl)
 
     // 3. Audio & browser alert
     notificationService.sendNotification('Payment Request Rejected', {
-      body: `Payment request for ${bill.billId} was rejected. Customer has been alerted to review.`,
+      body: `Payment request for ${billId} was rejected. Customer has been alerted.`,
     })
+
+    // 4. Sync to Google Sheets
+    if (activeSheetUrl && sheetConfig.isConnected) {
+      try {
+        await googleSheetsApi.updateBill(activeSheetUrl, {
+          billId: billId,
+          paymentRequest: rejectedRequest,
+        })
+
+        if (notifIdToResolve) {
+          await googleSheetsApi.deleteNotification(activeSheetUrl, notifIdToResolve)
+        }
+
+        await googleSheetsApi.addNotification(activeSheetUrl, customerRejectionNotif)
+      } catch (err) {
+        console.error('Failed to sync rejected bill to sheet:', err)
+      }
+    }
   }
 
   // Dynamic notifications computation for the active user
@@ -618,10 +748,28 @@ export default function App() {
 
       // Standalone notifications targeted to admin
       notifications.forEach((n) => {
+        const cleanNotifBillId = String(n.billId || '').trim().toLowerCase()
+        const matchingBill = bills.find(
+          (b) => String(b.billId || '').trim().toLowerCase() === cleanNotifBillId
+        )
+
+        // If the corresponding bill is already accepted or rejected, skip obsolete request notification
+        if (
+          matchingBill?.paymentRequest &&
+          matchingBill.paymentRequest.status !== 'pending' &&
+          n.type === 'payment_request'
+        ) {
+          return
+        }
+
         if (
           n.recipientUsername === 'admin' &&
           n.status === 'active' &&
-          !notifs.some((existing) => existing.billId === n.billId && existing.type === n.type)
+          !notifs.some(
+            (existing) =>
+              String(existing.billId || '').trim().toLowerCase() === cleanNotifBillId &&
+              existing.type === n.type
+          )
         ) {
           notifs.push(n)
         }
@@ -677,22 +825,6 @@ export default function App() {
             recipientUsername: currentUser.username,
             createdAt: b.createdOn || new Date().toISOString(),
             status: 'active',
-            paymentRequest: {
-              id: `req-${b.billId}`,
-              billId: b.billId,
-              client: b.client,
-              project: b.project,
-              selectedPeriod: b.selectedPeriod,
-              totalAmount: b.netAmount,
-              customerUsername: currentUser.username,
-              requestedStatus: 'Fully Paid',
-              paidAmount: rem,
-              remainingAmount: rem,
-              paymentDate: new Date().toISOString().slice(0, 10),
-              description: '',
-              submittedAt: b.createdOn || new Date().toISOString(),
-              status: 'pending',
-            },
           })
         } else {
           // Unpaid bill
@@ -705,22 +837,6 @@ export default function App() {
             recipientUsername: currentUser.username,
             createdAt: b.createdOn || new Date().toISOString(),
             status: 'active',
-            paymentRequest: {
-              id: `req-${b.billId}`,
-              billId: b.billId,
-              client: b.client,
-              project: b.project,
-              selectedPeriod: b.selectedPeriod,
-              totalAmount: b.netAmount,
-              customerUsername: currentUser.username,
-              requestedStatus: 'Fully Paid',
-              paidAmount: b.netAmount,
-              remainingAmount: b.netAmount,
-              paymentDate: new Date().toISOString().slice(0, 10),
-              description: '',
-              submittedAt: b.createdOn || new Date().toISOString(),
-              status: 'pending',
-            },
           })
         }
       })
@@ -738,7 +854,12 @@ export default function App() {
       })
     }
 
-    return notifs
+    // Sort notifications in Z to A order (most recent first based on notification creation time)
+    return notifs.sort((a, b) => {
+      const timeA = new Date(a.createdAt || 0).getTime()
+      const timeB = new Date(b.createdAt || 0).getTime()
+      return timeB - timeA
+    })
   }, [bills, currentUser, isAdmin, notifications, isAssignedToCurrentCustomer])
 
   // Auto-refresh fresh data from Google Sheets whenever portal opens / user logs in
@@ -2376,30 +2497,104 @@ export default function App() {
         notifications={activeNotifications}
         currentUser={currentUser}
         isAdmin={isAdmin}
-        onAcceptRequest={async (notif) => {
-          const target = bills.find((b) => b.billId === notif.billId)
-          if (target) {
-            await handleAcceptPaymentRequest(target)
-          }
-        }}
-        onRejectRequest={async (notif) => {
-          const target = bills.find((b) => b.billId === notif.billId)
-          if (target) {
-            await handleRejectPaymentRequest(target)
-          }
-        }}
+        onAcceptRequest={handleAcceptPaymentRequest}
+        onRejectRequest={handleRejectPaymentRequest}
         onOpenBill={(billId) => {
-          setSelectedBillIdToOpen(billId)
+          const cleanId = String(billId || '').trim().toLowerCase()
+          const target = bills.find(
+            (b) => String(b.billId || '').trim().toLowerCase() === cleanId
+          )
+
           if (isAdmin) {
             setActiveView('bills')
           } else {
             setActiveView('my-bills')
           }
+
+          if (target) {
+            const matchingNotif = activeNotifications.find(
+              (n) => String(n.billId || '').trim().toLowerCase() === cleanId
+            )
+            const hasRealReq =
+              matchingNotif?.paymentRequest &&
+              matchingNotif.paymentRequest.status === 'pending' &&
+              Boolean(matchingNotif.paymentRequest.description?.trim())
+
+            const billToOpen: BillItem =
+              hasRealReq && !target.paymentRequest
+                ? { ...target, paymentRequest: matchingNotif.paymentRequest }
+                : target
+
+            setActiveModalBill(billToOpen)
+            setShowNotificationDrawer(false)
+          } else {
+            setSelectedBillIdToOpen(billId)
+            setShowNotificationDrawer(false)
+          }
         }}
-        onDismissNotification={(id) => {
-          saveNotificationsCache(notifications.filter((n) => n.id !== id))
+        onDismissNotification={async (id) => {
+          const updated = notifications.filter((n) => n.id !== id)
+          saveNotificationsCache(updated, activeSheetUrl)
+          if (activeSheetUrl && sheetConfig.isConnected) {
+            try {
+              await googleSheetsApi.deleteNotification(activeSheetUrl, id)
+            } catch (err) {
+              console.error('Failed to delete notification:', err)
+            }
+          }
         }}
       />
+
+      {/* Universal Bill Detail Form Modal (opened from notification drawer, table, etc.) */}
+      {activeModalBill && (
+        <BillDetailModal
+          bill={activeModalBill}
+          isCustomerView={!isAdmin}
+          currentUser={currentUser}
+          onClose={() => setActiveModalBill(null)}
+          onRequestPaymentStatusChange={async (req) => {
+            const ok = await handleCustomerPaymentRequest(req)
+            if (ok) {
+              const updated = bills.find(
+                (b) => String(b.billId || '').trim().toLowerCase() === String(req.billId || '').trim().toLowerCase()
+              )
+              if (updated) {
+                setActiveModalBill(updated)
+              } else {
+                setActiveModalBill(null)
+              }
+            }
+            return ok
+          }}
+          onAcceptRequest={
+            isAdmin
+              ? async (b) => {
+                  await handleAcceptPaymentRequest(b)
+                  setActiveModalBill(null)
+                }
+              : undefined
+          }
+          onRejectRequest={
+            isAdmin
+              ? async (b) => {
+                  await handleRejectPaymentRequest(b)
+                  setActiveModalBill(null)
+                }
+              : undefined
+          }
+          onSaveBill={
+            isAdmin
+              ? async (updated) => {
+                  const ok = await handleUpdateBill(updated)
+                  if (ok) {
+                    setActiveModalBill(updated)
+                  }
+                  return ok
+                }
+              : undefined
+          }
+        />
+      )}
 
     </div>
   )
